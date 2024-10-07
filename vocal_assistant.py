@@ -34,7 +34,7 @@ class VocalAssistant:
     
 
 if __name__ == '__main__':
-    vc = VocalAssistant(0)
+    vc = VocalAssistant(1)
     vc.talk("What is your mood today?")
     while True:
         command = vc.take_command()
