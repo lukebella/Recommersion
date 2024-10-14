@@ -58,7 +58,7 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
 
 
 # load model from hub
-device = 'gpu'
+device = 'cpu'
 model_name = 'audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'
 processor = Wav2Vec2Processor.from_pretrained(model_name)
 model = EmotionModel.from_pretrained(model_name).to(device)
@@ -93,11 +93,11 @@ def process_func(
     return y
 
 
-print(process_func(signal, sampling_rate))
+"""print(process_func(signal, sampling_rate))
 #  Arousal    dominance valence
 # [[0.5460754  0.6062266  0.40431657]]
 
 print(process_func(signal, sampling_rate, embeddings=True))
 # Pooled hidden states of last transformer layer
 # [[-0.00752167  0.0065819  -0.00746342 ...  0.00663632  0.00848748
-#    0.00599211]]
+#    0.00599211]]"""
