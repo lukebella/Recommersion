@@ -23,11 +23,10 @@ class VocalAssistant:
             
                 #use our microphone as source and calling speechrecognizier to listen this source
                 voice = self.listener.listen(source)
+                #wav_file = voice.get_wav_data()
                 command = self.listener.recognize_google(voice)
                 command = command.lower()
-                """if 'alexa' in command:
-                    command = command.replace('alexa','')
-                    print(command)"""
+               
         except:
             pass
         return command
