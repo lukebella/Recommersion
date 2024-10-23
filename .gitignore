@@ -2,6 +2,6 @@ w2v2-L-robust-12
 IEMOCAP_full_release_withoutVideos.tar
 data/
 extract.py
-fine_tuning.py
+fine_tuning.ipynb
 predict_emotion.py
 model_checkpoint.pth
