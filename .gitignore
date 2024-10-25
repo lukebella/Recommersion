@@ -7,3 +7,5 @@ predict_emotion.py
 model_checkpoint.pth
 __pycache__
 .DS_Store
+./__pycache__
+vocal_assistant/emotion/model_checkpoint_sampled.pth
