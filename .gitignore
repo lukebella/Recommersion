@@ -3,9 +3,9 @@ IEMOCAP_full_release_withoutVideos.tar
 data/
 extract.py
 fine_tuning.ipynb
-predict_emotion.py
+predict_emotion.ipynb
 model_checkpoint.pth
 __pycache__
 .DS_Store
 ./__pycache__
-vocal_assistant/emotion/model_checkpoint_sampled.pth
+model_checkpoint_sampled.pth
