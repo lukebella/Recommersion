@@ -8,6 +8,7 @@ from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from torch.nn.utils.rnn import pad_sequence
 import os
+import numpy as np
 
 class EmotionDataset(Dataset):
     def __init__(self, df, processor):
@@ -140,8 +141,9 @@ def return_device():
 def train(model, train_dataloader, test_dataloader, epochs=3):
     device = return_device()
     model.to(device)
-    optimizer = AdamW(model.parameters(), lr=1e-4)
-    loss_fn = nn.MSELoss() 
+    optimizer = AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)
+    #loss_fn = nn.MSELoss()
+    loss_fn = nn.SmoothL1Loss() 
     checkpoint_path = "model_checkpoint_sampled.pth"
 
     model.train()
@@ -220,33 +222,39 @@ def predict_emotion(model, processor, wav_data):
     }"""
     return outputs[1]
 
-if __name__ == "__main ":
-    processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base")
-    #model = Wav2Vec2ForEmotionRegression().to(return_device())
-    config = Wav2Vec2Config.from_pretrained("facebook/wav2vec2-base")
-    config.num_labels = 3  # Ensure this matches the number of regression outputs (Valence, Arousal, Dominance)
-    model = EmotionModel(config).to(return_device())
+#if __name__ == "__main ":
+processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base")
+#model = Wav2Vec2ForEmotionRegression().to(return_device())
+config = Wav2Vec2Config.from_pretrained("facebook/wav2vec2-base")
+config.num_labels = 3  # Ensure this matches the number of regression outputs (Valence, Arousal, Dominance)
+model = EmotionModel(config).to(return_device())
 
-    df = pd.read_pickle("data/IEMOCAP_useful")
-    df_shuffled = df.sample(frac=1, random_state=42).reset_index(drop=True)
-    print(df_shuffled.head())
-    """
-                    Turn_Name  Valence  Arousal  Dominance                                           wav_file
-    0  Ses04F_script01_2_F020      0.3      0.7        0.8  [0.00045776367, -3.0517578e-05, 0.00045776367,...
-    1  Ses02M_script02_1_F010      0.5      0.5        0.5  [-0.0032653809, -0.003112793, -0.0029296875, -...
-    2  Ses05F_script01_3_M030      0.5      0.8        0.9  [-0.00045776367, -0.00079345703, -0.0007019043...
-    3  Ses04M_script01_3_M002      0.5      0.5        0.6  [-0.0032043457, -0.0033569336, -0.003479004, -...
-    4  Ses05F_script02_2_F023      0.4      0.7        0.7  [0.011016846, -0.017822266, -0.0079956055, 0.0...
-    """
-    df_sampled = df_shuffled.sample(frac=0.02, random_state=42)
+df = pd.read_pickle("data/IEMOCAP_useful")
+df_shuffled = df.sample(frac=1, random_state=42).reset_index(drop=True)
+print(df_shuffled.head())
+"""
+                Turn_Name  Valence  Arousal  Dominance                                           wav_file
+0  Ses04F_script01_2_F020      0.3      0.7        0.8  [0.00045776367, -3.0517578e-05, 0.00045776367,...
+1  Ses02M_script02_1_F010      0.5      0.5        0.5  [-0.0032653809, -0.003112793, -0.0029296875, -...
+2  Ses05F_script01_3_M030      0.5      0.8        0.9  [-0.00045776367, -0.00079345703, -0.0007019043...
+3  Ses04M_script01_3_M002      0.5      0.5        0.6  [-0.0032043457, -0.0033569336, -0.003479004, -...
+4  Ses05F_script02_2_F023      0.4      0.7        0.7  [0.011016846, -0.017822266, -0.0079956055, 0.0...
+"""
+df_sampled = df_shuffled.sample(frac=0.02, random_state=42)
+print(df_sampled["wav_file"].iloc[45].shape)
 
-    train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
+train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
 
-    # Create datasets
-    train_dataset = EmotionDataset(train_df, processor)
-    test_dataset = EmotionDataset(test_df, processor)
+# Create datasets
+train_dataset = EmotionDataset(train_df, processor)
+test_dataset = EmotionDataset(test_df, processor)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
-    test_dataloader = DataLoader(test_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
+train_dataloader = DataLoader(train_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
+test_dataloader = DataLoader(test_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
 
-    train(model, train_dataloader, test_dataloader, epochs = 3)
+for batch in train_dataloader:
+    first_input_values = batch['input_values']  # Access first element of 'input_values' in the batch
+    print(first_input_values)
+    break
+
+train(model, train_dataloader, test_dataloader, epochs = 3)

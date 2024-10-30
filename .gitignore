@@ -9,3 +9,4 @@ __pycache__
 .DS_Store
 ./__pycache__
 model_checkpoint_sampled.pth
+interface.py

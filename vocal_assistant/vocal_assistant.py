@@ -32,6 +32,8 @@ class VocalAssistant:
                 # Print sample rate and the shape of the numpy array
                 print("Sample rate:", sample_rate)
                 print("Numpy array shape:", audio.shape)
+                
+                #cut to the padding shape in training part?
                 command = self.listener.recognize_google(voice)
                 command = command.lower()
                
