@@ -9,14 +9,13 @@ if __name__=='__main__':
     Main().mainloop()"""
 
 
-import tkinter as tk
-import requests
+from tkinter import *
 
-window = tk.Tk()
+window = Tk()
 window.geometry("900x550")
-window.title("ASCII ART DOWNLOADER")
+window.title("RECOMMERSION")
 window.grid_columnconfigure(0, weight=1)
-welcome_label = tk.Label(window,
+welcome_label = Label(window,
                          text="Welcome! Aggiungi una parola o una frase da scaricare:",
                          font=("Helvetica", 15))
 welcome_label.grid(row=0, column=0, sticky="N", padx=20, pady=10)
@@ -24,8 +23,12 @@ welcome_label.grid(row=0, column=0, sticky="N", padx=20, pady=10)
 def download_ascii():
     text_response = "Aggiungi una parola o una frase al campo input!"
 
-download_button = tk.Button(text="DOWNLOAD ASCII ART", command=download_ascii)
-download_button.bbox(row=2, column=0, sticky="WE", pady=30, padx=30)
+download_button = Button(text="DOWNLOAD ASCII ART", command=download_ascii)
+
+
+frame = Frame(window, width = 50, height = 50, bg = "#ffffff")
+frame.grid(row = 0, column = 1, padx = 1, pady = 1)
+# https://www.youtube.com/watch?v=DGeDcxul5Zk
 
 
 

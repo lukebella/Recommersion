@@ -9,6 +9,7 @@ from sklearn.model_selection import train_test_split
 from torch.nn.utils.rnn import pad_sequence
 import os
 import numpy as np
+from torchmetrics.regression import ConcordanceCorrCoef
 
 class EmotionDataset(Dataset):
     def __init__(self, df, processor):
@@ -38,18 +39,18 @@ class RegressionHead(nn.Module):
 
         super().__init__()
 
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
-        self.dropout = nn.Dropout(config.final_dropout)
-        self.out_proj = nn.Linear(config.hidden_size, config.num_labels)
+        self.dense = nn.Linear(config.hidden_size, config.num_labels)
+        #self.dropout = nn.Dropout(config.final_dropout)
+        #self.out_proj = nn.Linear(config.hidden_size, config.num_labels)
 
     def forward(self, features, **kwargs):
 
         x = features
-        x = self.dropout(x)
+        #x = self.dropout(x)
         x = self.dense(x)
         x = torch.tanh(x)
-        x = self.dropout(x)
-        x = self.out_proj(x)
+        #x = self.dropout(x)
+        #x = self.out_proj(x)
 
         return x
 
@@ -143,7 +144,8 @@ def train(model, train_dataloader, test_dataloader, epochs=3):
     model.to(device)
     optimizer = AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)
     #loss_fn = nn.MSELoss()
-    loss_fn = nn.SmoothL1Loss() 
+    #loss_fn = nn.SmoothL1Loss() 
+    loss_fn = ConcordanceCorrCoef(num_outputs=1)
     checkpoint_path = "model_checkpoint_sampled.pth"
 
     model.train()
@@ -161,6 +163,7 @@ def train(model, train_dataloader, test_dataloader, epochs=3):
             #loss = loss_fn(outputs, labels)
             _, logits = model(input_values=input_values, attention_mask=attention_mask)
             loss = loss_fn(logits, labels)
+            print(loss)
             loss.backward()
             optimizer.step()
             
@@ -230,6 +233,7 @@ config.num_labels = 3  # Ensure this matches the number of regression outputs (V
 model = EmotionModel(config).to(return_device())
 
 df = pd.read_pickle("data/IEMOCAP_useful")
+print(df.shape)
 df_shuffled = df.sample(frac=1, random_state=42).reset_index(drop=True)
 print(df_shuffled.head())
 """
@@ -240,7 +244,7 @@ print(df_shuffled.head())
 3  Ses04M_script01_3_M002      0.5      0.5        0.6  [-0.0032043457, -0.0033569336, -0.003479004, -...
 4  Ses05F_script02_2_F023      0.4      0.7        0.7  [0.011016846, -0.017822266, -0.0079956055, 0.0...
 """
-df_sampled = df_shuffled.sample(frac=0.02, random_state=42)
+df_sampled = df_shuffled.sample(frac=0.01, random_state=42)
 print(df_sampled["wav_file"].iloc[45].shape)
 
 train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
@@ -252,9 +256,8 @@ test_dataset = EmotionDataset(test_df, processor)
 train_dataloader = DataLoader(train_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
 test_dataloader = DataLoader(test_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
 
-for batch in train_dataloader:
+"""for batch in train_dataloader:
     first_input_values = batch['input_values']  # Access first element of 'input_values' in the batch
-    print(first_input_values)
-    break
+    print(first_input_values.shape)"""
 
 train(model, train_dataloader, test_dataloader, epochs = 3)
