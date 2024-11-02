@@ -145,7 +145,7 @@ def train(model, train_dataloader, test_dataloader, epochs=3):
     optimizer = AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)
     #loss_fn = nn.MSELoss()
     #loss_fn = nn.SmoothL1Loss() 
-    loss_fn = ConcordanceCorrCoef(num_outputs=1)
+    loss_fn = ConcordanceCorrCoef(num_outputs=4)
     checkpoint_path = "model_checkpoint_sampled.pth"
 
     model.train()
@@ -162,8 +162,14 @@ def train(model, train_dataloader, test_dataloader, epochs=3):
             #outputs = model(input_values=input_values, attention_mask=attention_mask)
             #loss = loss_fn(outputs, labels)
             _, logits = model(input_values=input_values, attention_mask=attention_mask)
-            loss = loss_fn(logits, labels)
-            print(loss)
+
+            loss_val = loss_fn(logits[:, 0], labels[:, 0])
+            loss_ar = loss_fn(logits[:, 1], labels[:, 1])
+            loss_dom = loss_fn(logits[:, 2], labels[:, 2])
+            #print(loss_val, loss_ar, loss_dom)
+            l = (loss_val + loss_ar + loss_dom) / 3.0
+            loss = l[0]
+            #print(loss)
             loss.backward()
             optimizer.step()
             
