@@ -10,3 +10,4 @@ __pycache__
 ./__pycache__
 model_checkpoint_sampled.pth
 interface.py
+.stfolder

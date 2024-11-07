@@ -70,12 +70,12 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
     def forward(
             self,
             input_values,
-            attention_mask=None
+            attention_mask
     ):
 
         outputs = self.wav2vec2(input_values, attention_mask=attention_mask)
         hidden_states = outputs[0]
-        hidden_states = torch.mean(hidden_states, dim=1)
+        hidden_states = hidden_states.mean(dim=1)
         logits = self.classifier(hidden_states)
 
         return hidden_states, logits
@@ -142,10 +142,10 @@ def return_device():
 def train(model, train_dataloader, test_dataloader, epochs=3):
     device = return_device()
     model.to(device)
-    optimizer = AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)
+    optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
     #loss_fn = nn.MSELoss()
     #loss_fn = nn.SmoothL1Loss() 
-    loss_fn = ConcordanceCorrCoef(num_outputs=4)
+    loss_fn = ConcordanceCorrCoef(num_outputs=1)
     checkpoint_path = "model_checkpoint_sampled.pth"
 
     model.train()
@@ -162,18 +162,16 @@ def train(model, train_dataloader, test_dataloader, epochs=3):
             #outputs = model(input_values=input_values, attention_mask=attention_mask)
             #loss = loss_fn(outputs, labels)
             _, logits = model(input_values=input_values, attention_mask=attention_mask)
-
             loss_val = loss_fn(logits[:, 0], labels[:, 0])
             loss_ar = loss_fn(logits[:, 1], labels[:, 1])
             loss_dom = loss_fn(logits[:, 2], labels[:, 2])
             #print(loss_val, loss_ar, loss_dom)
-            l = (loss_val + loss_ar + loss_dom) / 3.0
-            loss = l[0]
+            loss = torch.mean(torch.stack([loss_val, loss_ar, loss_dom]))  # stack and mean for stability
             #print(loss)
             loss.backward()
             optimizer.step()
-            
-            epoch_loss += loss.item()
+            print(loss)
+            epoch_loss += loss
         
         print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {epoch_loss / len(train_dataloader)}")
         save_checkpoint(model, optimizer, epoch, checkpoint_path)
@@ -190,19 +188,23 @@ def train(model, train_dataloader, test_dataloader, epochs=3):
                 #outputs = model(input_values=input_values, attention_mask=attention_mask)
                 #loss = loss_fn(outputs, labels)
                 _, logits = model(input_values=input_values, attention_mask=attention_mask)
-                loss = loss_fn(logits, labels)
-                val_loss += loss.item()
+                loss_val = loss_fn(logits[:, 0], labels[:, 0])
+                loss_ar = loss_fn(logits[:, 1], labels[:, 1])
+                loss_dom = loss_fn(logits[:, 2], labels[:, 2])
+                #print(loss_val, loss_ar, loss_dom)
+                loss = torch.mean(torch.stack([loss_val, loss_ar, loss_dom]))  # stack and mean for stability
+                val_loss += loss
 
         print(f"Epoch {epoch + 1}/{epochs}, Validation Loss: {val_loss / len(test_dataloader)}")
 
 
-def load_trained_model(checkpoint_path):
+def load_trained_model(checkpoint_path, pretrained_model):
     device = return_device()
     #model = Wav2Vec2ForEmotionRegression().to(device)
-    config = Wav2Vec2Config.from_pretrained("facebook/wav2vec2-base")
+    config = Wav2Vec2Config.from_pretrained(pretrained_model)
     config.num_labels = 3  # Ensure this matches the number of regression outputs (Valence, Arousal, Dominance)
     model = EmotionModel(config).to(device)
-    processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base")
+    processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
     
     if os.path.isfile(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -232,14 +234,16 @@ def predict_emotion(model, processor, wav_data):
     return outputs[1]
 
 #if __name__ == "__main ":
-processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base")
+pretrained_model = "facebook/wav2vec2-base"
+processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
 #model = Wav2Vec2ForEmotionRegression().to(return_device())
-config = Wav2Vec2Config.from_pretrained("facebook/wav2vec2-base")
+config = Wav2Vec2Config.from_pretrained(pretrained_model)
 config.num_labels = 3  # Ensure this matches the number of regression outputs (Valence, Arousal, Dominance)
 model = EmotionModel(config).to(return_device())
 
 df = pd.read_pickle("data/IEMOCAP_useful")
 print(df.shape)
+assert not df[["Valence", "Arousal", "Dominance"]].isnull().values.any(), "NaNs in target labels"
 df_shuffled = df.sample(frac=1, random_state=42).reset_index(drop=True)
 print(df_shuffled.head())
 """
@@ -250,7 +254,7 @@ print(df_shuffled.head())
 3  Ses04M_script01_3_M002      0.5      0.5        0.6  [-0.0032043457, -0.0033569336, -0.003479004, -...
 4  Ses05F_script02_2_F023      0.4      0.7        0.7  [0.011016846, -0.017822266, -0.0079956055, 0.0...
 """
-df_sampled = df_shuffled.sample(frac=0.01, random_state=42)
+df_sampled = df_shuffled.sample(frac=0.02, random_state=42)
 print(df_sampled["wav_file"].iloc[45].shape)
 
 train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
@@ -259,11 +263,11 @@ train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
 train_dataset = EmotionDataset(train_df, processor)
 test_dataset = EmotionDataset(test_df, processor)
 
-train_dataloader = DataLoader(train_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
-test_dataloader = DataLoader(test_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
+train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True, collate_fn=custom_collate)
+test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=True, collate_fn=custom_collate)
 
 """for batch in train_dataloader:
     first_input_values = batch['input_values']  # Access first element of 'input_values' in the batch
     print(first_input_values.shape)"""
 
-train(model, train_dataloader, test_dataloader, epochs = 3)
+train(model, train_dataloader, test_dataloader, epochs = 5)
