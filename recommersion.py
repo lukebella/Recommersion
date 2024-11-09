@@ -63,6 +63,14 @@ text_entry.grid(row=0, column=1, padx=10, pady=10)
 text_button = ttk.Button(input_frame, text="Generate Playlist from Text", command=generate_playlist_from_text)
 text_button.grid(row=0, column=2, padx=10, pady=10)
 
+# === Frame 3: Playlist Frame ===
+playlist_frame = ttk.LabelFrame(root, text="Playlist")
+playlist_frame.pack(pady=10, padx=10, fill="both", expand="yes")
+
+# Placeholder label for playlist (could be a listbox or Treeview for displaying songs)
+playlist_label = ttk.Label(playlist_frame, text="Playlist will be displayed here", padding=10)
+playlist_label.pack()
+
 # === Frame 2: Adjustment Frame ===
 adjustment_frame = ttk.LabelFrame(root, text="Adjust Emotion - Valence and Arousal")
 adjustment_frame.pack(pady=10, padx=10, fill="both", expand="yes")
@@ -82,14 +90,6 @@ arousal_slider.grid(row=1, column=1, padx=10, pady=10)
 # Button to re-generate playlist with adjusted valence/arousal
 adjust_button = ttk.Button(adjustment_frame, text="Recompute Playlist", command=adjust_recommendation)
 adjust_button.grid(row=2, column=0, columnspan=2, pady=10)
-
-# === Frame 3: Playlist Frame ===
-playlist_frame = ttk.LabelFrame(root, text="Playlist")
-playlist_frame.pack(pady=10, padx=10, fill="both", expand="yes")
-
-# Placeholder label for playlist (could be a listbox or Treeview for displaying songs)
-playlist_label = ttk.Label(playlist_frame, text="Playlist will be displayed here", padding=10)
-playlist_label.pack()
 
 # === Frame 4: Playback Controls Frame ===
 controls_frame = ttk.LabelFrame(root, text="Playback Controls")

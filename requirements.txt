@@ -9,3 +9,4 @@ pandas>=2.0.3
 transformers>=4.46.1
 torchmetrics>=1.5.1
 torchvision>=0.20.1
+tk>=0.1.0

@@ -10,6 +10,7 @@ from torch.nn.utils.rnn import pad_sequence
 import os
 import numpy as np
 from torchmetrics.regression import ConcordanceCorrCoef
+import gc
 
 class EmotionDataset(Dataset):
     def __init__(self, df, processor):
@@ -137,7 +138,7 @@ def save_checkpoint(model, optimizer, epoch, filename):
         return 0"""
     
 def return_device():
-    torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Dynamically set device
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Dynamically set device
 
 def train(model, train_dataloader, test_dataloader, epochs=3):
     device = return_device()
@@ -145,14 +146,14 @@ def train(model, train_dataloader, test_dataloader, epochs=3):
     optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
     #loss_fn = nn.MSELoss()
     #loss_fn = nn.SmoothL1Loss() 
-    loss_fn = ConcordanceCorrCoef(num_outputs=1)
+    loss_fn = ConcordanceCorrCoef(num_outputs=1).to(device)
     checkpoint_path = "model_checkpoint_sampled.pth"
 
     model.train()
 
     for epoch in range(epochs):
         epoch_loss = 0
-
+        gc.collect()
         for batch in tqdm(train_dataloader):
             input_values = batch['input_values'].to(device)
             attention_mask = batch['attention_mask'].to(device)
@@ -171,7 +172,10 @@ def train(model, train_dataloader, test_dataloader, epochs=3):
             loss.backward()
             optimizer.step()
             print(loss)
-            epoch_loss += loss
+            epoch_loss += loss.item()
+            #print(torch.cuda.memory_summary(device=None, abbreviated=False))
+            torch.cuda.empty_cache()
+
         
         print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {epoch_loss / len(train_dataloader)}")
         save_checkpoint(model, optimizer, epoch, checkpoint_path)
@@ -193,7 +197,9 @@ def train(model, train_dataloader, test_dataloader, epochs=3):
                 loss_dom = loss_fn(logits[:, 2], labels[:, 2])
                 #print(loss_val, loss_ar, loss_dom)
                 loss = torch.mean(torch.stack([loss_val, loss_ar, loss_dom]))  # stack and mean for stability
-                val_loss += loss
+                val_loss += loss.item()
+                torch.cuda.empty_cache()
+
 
         print(f"Epoch {epoch + 1}/{epochs}, Validation Loss: {val_loss / len(test_dataloader)}")
 
@@ -244,8 +250,8 @@ model = EmotionModel(config).to(return_device())
 df = pd.read_pickle("data/IEMOCAP_useful")
 print(df.shape)
 assert not df[["Valence", "Arousal", "Dominance"]].isnull().values.any(), "NaNs in target labels"
-df_shuffled = df.sample(frac=1, random_state=42).reset_index(drop=True)
-print(df_shuffled.head())
+df_sampled = df.sample(frac=1, random_state=42).reset_index(drop=True)
+print(df_sampled.head())
 """
                 Turn_Name  Valence  Arousal  Dominance                                           wav_file
 0  Ses04F_script01_2_F020      0.3      0.7        0.8  [0.00045776367, -3.0517578e-05, 0.00045776367,...
@@ -254,7 +260,7 @@ print(df_shuffled.head())
 3  Ses04M_script01_3_M002      0.5      0.5        0.6  [-0.0032043457, -0.0033569336, -0.003479004, -...
 4  Ses05F_script02_2_F023      0.4      0.7        0.7  [0.011016846, -0.017822266, -0.0079956055, 0.0...
 """
-df_sampled = df_shuffled.sample(frac=0.02, random_state=42)
+#df_sampled = df_shuffled.sample(frac=0.02, random_state=42)
 print(df_sampled["wav_file"].iloc[45].shape)
 
 train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
