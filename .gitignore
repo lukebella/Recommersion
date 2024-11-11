@@ -1,14 +1,15 @@
 w2v2-L-robust-12
-IEMOCAP_full_release_withoutVideos.tar
+*.tar
 data/
 extract.py
 fine_tuning.ipynb
 predict_emotion.ipynb
-model_checkpoint.pth
+*.pth
 __pycache__
 .DS_Store
 ./__pycache__
 model_checkpoint_sampled.pth
 interface.py
 .stfolder
+*.wav
 .vscode
