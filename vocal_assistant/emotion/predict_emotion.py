@@ -19,8 +19,6 @@ class EmotionDataset(Dataset):
     def __init__(self, df, processor):
         self.df = df
         self.processor = processor
-        #self.df["Valence"] = (self.df["Valence"] - self.df["Valence"].min()) / (self.df["Valence"].max() - self.df["Valence"].min())
-        #self.df["Arousal"] = (self.df["Arousal"] - self.df["Arousal"].min()) / (self.df["Arousal"].max() - self.df["Arousal"].min())
 
     def __len__(self):
         return len(self.df)
@@ -145,13 +143,31 @@ def save_checkpoint(model, optimizer, epoch, filename):
 def return_device():
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Dynamically set device
 
+def ccc(gold, pred):
+    gold = gold.squeeze(-1)
+    pred = pred.squeeze(-1)
+    
+    gold_mean = torch.mean(gold, dim=-1, keepdim=True)
+    pred_mean = torch.mean(pred, dim=-1, keepdim=True)
+    
+    covariance = torch.mean((gold - gold_mean) * (pred - pred_mean), dim=-1, keepdim=True)
+    gold_var = torch.mean((gold - gold_mean) ** 2, dim=-1, keepdim=True)
+    pred_var = torch.mean((pred - pred_mean) ** 2, dim=-1, keepdim=True)
+    
+    ccc = (2 * covariance) / (gold_var + pred_var + (gold_mean - pred_mean) ** 2 + 1e-7)
+    return ccc
+
+def ccc_loss(gold, pred):
+    ccc_loss = 1 - ccc(gold, pred)
+    return ccc_loss
+
 def train(model, train_dataloader, test_dataloader, epochs=3):
     device = return_device()
     model.to(device)
     optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
     #loss_fn = nn.MSELoss()
     #loss_fn = nn.SmoothL1Loss() 
-    loss_fn = ConcordanceCorrCoef(num_outputs=1).to(device)
+    loss_fn = ConcordanceCorrCoef(num_outputs=2).to(device)
     checkpoint_path = "model_checkpoint_sampled.pth"
 
     model.train()
@@ -168,20 +184,18 @@ def train(model, train_dataloader, test_dataloader, epochs=3):
             #outputs = model(input_values=input_values, attention_mask=attention_mask)
             #loss = loss_fn(outputs, labels)
             _, logits = model(input_values=input_values, attention_mask=attention_mask)
-            print("logits_val: ", logits[:, 0])
-            print("labels_val: ", labels[:, 0])
-            print("logits_ar: ", logits[:, 1])
-            print("labels_ar: ", labels[:, 1])
+            
+            print("logits:", logits)
+            print("labels:", labels)
             if (labels[:, 0].var()==0 or labels[:, 1].var() == 0):
                 print("Labels var = 0!")
                 continue
-            loss_val = loss_fn(logits[:, 0], labels[:, 0])
-            print("Loss Val: ",loss_val)
-            loss_ar = loss_fn(logits[:, 1], labels[:, 1])
-            print("Loss Ar: ",loss_ar)
-            #loss_dom = loss_fn(logits[:, 2], labels[:, 2])
-            #print(loss_val, loss_ar, loss_dom)
-            loss = torch.mean(torch.stack([loss_val, loss_ar])) # stack and mean for stability
+
+            loss_val = ccc_loss(logits[:, 0], labels[:, 0])
+            loss_dom = ccc_loss(logits[:, 1], labels[:, 1])
+            loss = 0.1*loss_val + 0.5*loss_dom
+            print("Loss: ",loss)
+
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
 
@@ -202,17 +216,14 @@ def train(model, train_dataloader, test_dataloader, epochs=3):
                 input_values = batch['input_values'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
                 labels = batch['labels'].to(device)
-                #outputs = model(input_values=input_values, attention_mask=attention_mask)
-                #loss = loss_fn(outputs, labels)
+                
                 _, logits = model(input_values=input_values, attention_mask=attention_mask)
-                loss_val = loss_fn(logits[:, 0], labels[:, 0])
-                loss_ar = loss_fn(logits[:, 1], labels[:, 1])
                 if (labels[:, 0].var()==0 or labels[:, 1].var() == 0):
                     print("Labels var = 0!")
                     continue
-                #loss_dom = loss_fn(logits[:, 2], labels[:, 2])
-                #print(loss_val, loss_ar, loss_dom)
-                loss = torch.mean(torch.stack([loss_val, loss_ar]))  # stack and mean for stability
+                loss = loss_fn(logits, labels)
+                
+                loss = loss.mean()
                 val_loss += loss.item()
                 torch.cuda.empty_cache()
 
@@ -286,4 +297,4 @@ test_dataloader = DataLoader(test_dataset, batch_size=2, shuffle=True, collate_f
 #print("Dataset Variance: "+torch.var(train_dataloader, unbiased=True))
 torch.cuda.empty_cache()  # Releases unoccupied cached memory.
 torch.cuda.reset_peak_memory_stats()  # Resets memory stats for accurate debugging.
-train(model, train_dataloader, test_dataloader, epochs = 5)
+train(model, train_dataloader, test_dataloader, epochs = 3)
