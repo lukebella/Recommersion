@@ -1,3 +1,7 @@
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+
 import torch
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
@@ -7,7 +11,6 @@ from torch.optim import AdamW
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from torch.nn.utils.rnn import pad_sequence
-import os
 import numpy as np
 from torchmetrics.regression import ConcordanceCorrCoef
 import gc
@@ -16,6 +19,8 @@ class EmotionDataset(Dataset):
     def __init__(self, df, processor):
         self.df = df
         self.processor = processor
+        #self.df["Valence"] = (self.df["Valence"] - self.df["Valence"].min()) / (self.df["Valence"].max() - self.df["Valence"].min())
+        #self.df["Arousal"] = (self.df["Arousal"] - self.df["Arousal"].min()) / (self.df["Arousal"].max() - self.df["Arousal"].min())
 
     def __len__(self):
         return len(self.df)
@@ -24,11 +29,11 @@ class EmotionDataset(Dataset):
         wav_data = self.df.iloc[idx]["wav_file"]  
         valence = self.df.iloc[idx]["Valence"]
         arousal = self.df.iloc[idx]["Arousal"]
-        dominance = self.df.iloc[idx]["Dominance"]
+        #dominance = self.df.iloc[idx]["Dominance"]
         
         # Process audio input
         inputs = self.processor(wav_data, sampling_rate=16000, return_tensors="pt", padding=True)
-        inputs['labels'] = torch.tensor([valence, arousal, dominance], dtype=torch.float32)
+        inputs['labels'] = torch.tensor([valence, arousal], dtype=torch.float32)
         
         return inputs
     
@@ -49,7 +54,7 @@ class RegressionHead(nn.Module):
         x = features
         #x = self.dropout(x)
         x = self.dense(x)
-        x = torch.tanh(x)
+        #x = torch.tanh(x)
         #x = self.dropout(x)
         #x = self.out_proj(x)
 
@@ -159,19 +164,26 @@ def train(model, train_dataloader, test_dataloader, epochs=3):
             input_values = batch['input_values'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
-            
             optimizer.zero_grad()
             #outputs = model(input_values=input_values, attention_mask=attention_mask)
             #loss = loss_fn(outputs, labels)
             _, logits = model(input_values=input_values, attention_mask=attention_mask)
+            print("logits_val: ", logits[:, 0])
+            print("labels_val: ", labels[:, 0])
+            print("logits_ar: ", logits[:, 1])
+            print("labels_ar: ", labels[:, 1])
+            if (labels[:, 0].var()==0 or labels[:, 1].var() == 0):
+                print("Labels var = 0!")
+                continue
             loss_val = loss_fn(logits[:, 0], labels[:, 0])
+            print("Loss Val: ",loss_val)
             loss_ar = loss_fn(logits[:, 1], labels[:, 1])
-            loss_dom = loss_fn(logits[:, 2], labels[:, 2])
+            print("Loss Ar: ",loss_ar)
+            #loss_dom = loss_fn(logits[:, 2], labels[:, 2])
             #print(loss_val, loss_ar, loss_dom)
-            loss = torch.mean(torch.stack([loss_val, loss_ar, loss_dom]))  # stack and mean for stability
-            #print(loss)
+            loss = torch.mean(torch.stack([loss_val, loss_ar])) # stack and mean for stability
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
 
             optimizer.step()
             print(loss)
@@ -190,15 +202,17 @@ def train(model, train_dataloader, test_dataloader, epochs=3):
                 input_values = batch['input_values'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
                 labels = batch['labels'].to(device)
-                
                 #outputs = model(input_values=input_values, attention_mask=attention_mask)
                 #loss = loss_fn(outputs, labels)
                 _, logits = model(input_values=input_values, attention_mask=attention_mask)
                 loss_val = loss_fn(logits[:, 0], labels[:, 0])
                 loss_ar = loss_fn(logits[:, 1], labels[:, 1])
-                loss_dom = loss_fn(logits[:, 2], labels[:, 2])
+                if (labels[:, 0].var()==0 or labels[:, 1].var() == 0):
+                    print("Labels var = 0!")
+                    continue
+                #loss_dom = loss_fn(logits[:, 2], labels[:, 2])
                 #print(loss_val, loss_ar, loss_dom)
-                loss = torch.mean(torch.stack([loss_val, loss_ar, loss_dom]))  # stack and mean for stability
+                loss = torch.mean(torch.stack([loss_val, loss_ar]))  # stack and mean for stability
                 val_loss += loss.item()
                 torch.cuda.empty_cache()
 
@@ -241,43 +255,35 @@ def predict_emotion(model, processor, wav_data):
     }"""
     return outputs[1]
 
-if __name__ == "__main ":
-    pretrained_model = "facebook/wav2vec2-base"
-    processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
-    #model = Wav2Vec2ForEmotionRegression().to(return_device())
-    config = Wav2Vec2Config.from_pretrained(pretrained_model)
-    config.num_labels = 3  # Ensure this matches the number of regression outputs (Valence, Arousal, Dominance)
-    model = EmotionModel(config).to(return_device())
-    model.gradient_checkpointing_enable()
+#if __name__ == "__main ":
+pretrained_model = "facebook/wav2vec2-base"
+processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
+#model = Wav2Vec2ForEmotionRegression().to(return_device())
+config = Wav2Vec2Config.from_pretrained(pretrained_model)
+config.num_labels = 2  # Ensure this matches the number of regression outputs (Valence, Arousal, Dominance)
+model = EmotionModel(config).to(return_device())
+model.gradient_checkpointing_enable()
 
 
-    df = pd.read_pickle("data/IEMOCAP_useful")
-    print(df.shape)
-    assert not df[["Valence", "Arousal", "Dominance"]].isnull().values.any(), "NaNs in target labels"
-    df_sampled = df.sample(frac=1, random_state=42).reset_index(drop=True)
-    print(df_sampled.head())
-    """
-                    Turn_Name  Valence  Arousal  Dominance                                           wav_file
-    0  Ses04F_script01_2_F020      0.3      0.7        0.8  [0.00045776367, -3.0517578e-05, 0.00045776367,...
-    1  Ses02M_script02_1_F010      0.5      0.5        0.5  [-0.0032653809, -0.003112793, -0.0029296875, -...
-    2  Ses05F_script01_3_M030      0.5      0.8        0.9  [-0.00045776367, -0.00079345703, -0.0007019043...
-    3  Ses04M_script01_3_M002      0.5      0.5        0.6  [-0.0032043457, -0.0033569336, -0.003479004, -...
-    4  Ses05F_script02_2_F023      0.4      0.7        0.7  [0.011016846, -0.017822266, -0.0079956055, 0.0...
-    """
-    #df_sampled = df_shuffled.sample(frac=0.02, random_state=42)
-    print(df_sampled["wav_file"].iloc[45].shape)
+df = pd.read_pickle("data/full_data")
+print(df.shape)
+#assert not df[["Valence", "Arousal"]].isnull().values.any(), "NaNs in target labels"
+df_sampled = df.sample(frac=1, random_state=42).reset_index(drop=True)
+print(df_sampled.head())
 
-    train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
+train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
 
-    # Create datasets
-    train_dataset = EmotionDataset(train_df, processor)
-    test_dataset = EmotionDataset(test_df, processor)
+# Create datasets
+train_dataset = EmotionDataset(train_df, processor)
+test_dataset = EmotionDataset(test_df, processor)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
-    test_dataloader = DataLoader(test_dataset, batch_size=4, shuffle=True, collate_fn=custom_collate)
+train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate, pin_memory=True, num_workers=4)
+test_dataloader = DataLoader(test_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate, pin_memory=True, num_workers=4)
 
-    """for batch in train_dataloader:
-        first_input_values = batch['input_values']  # Access first element of 'input_values' in the batch
-        print(first_input_values.shape)"""
-    #print("Dataset Variance: "+torch.var(train_dataloader, unbiased=True))
-    train(model, train_dataloader, test_dataloader, epochs = 5)
+"""for batch in train_dataloader:
+    first_input_values = batch['input_values']  # Access first element of 'input_values' in the batch
+    print(first_input_values.shape)"""
+#print("Dataset Variance: "+torch.var(train_dataloader, unbiased=True))
+torch.cuda.empty_cache()  # Releases unoccupied cached memory.
+torch.cuda.reset_peak_memory_stats()  # Resets memory stats for accurate debugging.
+train(model, train_dataloader, test_dataloader, epochs = 5)
