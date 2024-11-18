@@ -52,7 +52,7 @@ class RegressionHead(nn.Module):
         x = features
         #x = self.dropout(x)
         x = self.dense(x)
-        #x = torch.tanh(x)
+        x = torch.sigmoid(x)        
         #x = self.dropout(x)
         #x = self.out_proj(x)
 
@@ -161,81 +161,102 @@ def ccc_loss(gold, pred):
     ccc_loss = 1 - ccc(gold, pred)
     return ccc_loss
 
-def train(model, train_dataloader, test_dataloader, epochs=3):
+
+def train(model, train_dataloader, test_dataloader, epochs=3, alpha=0.5, beta=0.5):
+    """
+    Train the model using CCC loss for valence and arousal.
+    """
     device = return_device()
     model.to(device)
     optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
-    #loss_fn = nn.MSELoss()
-    #loss_fn = nn.SmoothL1Loss() 
-    loss_fn = ConcordanceCorrCoef(num_outputs=2).to(device)
     checkpoint_path = "model_checkpoint_sampled.pth"
 
-    model.train()
-
     for epoch in range(epochs):
+        model.train()
         torch.cuda.empty_cache()
         epoch_loss = 0
         gc.collect()
+
+        # Training Loop
         for batch in tqdm(train_dataloader):
             input_values = batch['input_values'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
+            
             optimizer.zero_grad()
-            #outputs = model(input_values=input_values, attention_mask=attention_mask)
-            #loss = loss_fn(outputs, labels)
             _, logits = model(input_values=input_values, attention_mask=attention_mask)
             
-            print("logits:", logits)
-            print("labels:", labels)
-            if (labels[:, 0].var()==0 or labels[:, 1].var() == 0):
-                print("Labels var = 0!")
+            # Check label variance
+            if labels[:, 0].var() == 0 or labels[:, 1].var() == 0:
+                print("Labels var = 0! Skipping batch.")
                 continue
+            
+            # Compute CCC Loss for valence and arousal
+            loss_val = ccc_loss(labels[:, 0], logits[:, 0]).mean()
+            loss_ar = ccc_loss(labels[:, 1], logits[:, 1]).mean()
 
-            loss_val = ccc_loss(logits[:, 0], labels[:, 0])
-            loss_dom = ccc_loss(logits[:, 1], labels[:, 1])
-            loss = 0.1*loss_val + 0.5*loss_dom
-            print("Loss: ",loss)
+            # Weighted total loss
+            loss = alpha * loss_val + beta * loss_ar
+            print(f"Loss (valence): {loss_val.item()}, Loss (arousal): {loss_ar.item()}, Total: {loss.item()}")
 
+            # Backpropagation
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
-
             optimizer.step()
-            print(loss)
-            epoch_loss += loss.item()
-            #print(torch.cuda.memory_summary(device=None, abbreviated=False))
 
-        
+            epoch_loss += loss.item()
+
         print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {epoch_loss / len(train_dataloader)}")
         save_checkpoint(model, optimizer, epoch, checkpoint_path)
 
         # Validation Loop
-        model.eval()
-        val_loss = 0
-        with torch.no_grad():
-            for batch in test_dataloader:
-                input_values = batch['input_values'].to(device)
-                attention_mask = batch['attention_mask'].to(device)
-                labels = batch['labels'].to(device)
-                
-                _, logits = model(input_values=input_values, attention_mask=attention_mask)
-                if (labels[:, 0].var()==0 or labels[:, 1].var() == 0):
-                    print("Labels var = 0!")
-                    continue
-                loss = loss_fn(logits, labels)
-                
-                loss = loss.mean()
-                val_loss += loss.item()
-                torch.cuda.empty_cache()
+        validate(model, test_dataloader, alpha, beta)
 
 
-        print(f"Epoch {epoch + 1}/{epochs}, Validation Loss: {val_loss / len(test_dataloader)}")
+# Validation Loop
+def validate(model, test_dataloader, alpha, beta):
+    device = return_device()
+    model.eval()
+    val_loss = 0
+    ccc_scores = {"valence": [], "arousal": []}
+
+    with torch.no_grad():
+        for batch in test_dataloader:
+            input_values = batch['input_values'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            labels = batch['labels'].to(device)
+            
+            _, logits = model(input_values=input_values, attention_mask=attention_mask)
+
+            if labels[:, 0].var() == 0 or labels[:, 1].var() == 0:
+                print("Labels var = 0! Skipping batch.")
+                continue
+            
+            # Compute CCC Loss
+            loss_val = ccc_loss(labels[:, 0], logits[:, 0]).mean()
+            loss_ar = ccc_loss(labels[:, 1], logits[:, 1]).mean()
+            
+            # Store raw CCC scores
+            ccc_scores["valence"].append((1 - loss_val).item())  # Raw CCC
+            ccc_scores["arousal"].append((1 - loss_ar).item())  # Raw CCC
+            
+            # Total weighted loss
+            loss = alpha * loss_val + beta * loss_ar
+            val_loss += loss.item()
+
+    # Average CCC scores
+    avg_ccc_val = sum(ccc_scores["valence"]) / len(ccc_scores["valence"])
+    avg_ccc_ar = sum(ccc_scores["arousal"]) / len(ccc_scores["arousal"])
+
+    print(f"Validation Loss: {val_loss / len(test_dataloader)}")
+    print(f"Average CCC - Valence: {avg_ccc_val:.4f}, Arousal: {avg_ccc_ar:.4f}")
 
 
 def load_trained_model(checkpoint_path, pretrained_model):
     device = return_device()
     #model = Wav2Vec2ForEmotionRegression().to(device)
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
-    config.num_labels = 3  # Ensure this matches the number of regression outputs (Valence, Arousal, Dominance)
+    config.num_labels = 2  # Ensure this matches the number of regression outputs (Valence, Arousal, Dominance)
     model = EmotionModel(config).to(device)
     processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
     
@@ -258,12 +279,6 @@ def predict_emotion(model, processor, wav_data):
     with torch.no_grad():
         outputs = model(input_values=input_values, attention_mask=attention_mask)
     
-    """valence, arousal, dominance = outputs.squeeze().tolist()
-    return {
-        "Valence": valence,
-        "Arousal": arousal,
-        "Dominance": dominance
-    }"""
     return outputs[1]
 
 #if __name__ == "__main ":
@@ -279,7 +294,7 @@ model.gradient_checkpointing_enable()
 df = pd.read_pickle("data/full_data")
 print(df.shape)
 #assert not df[["Valence", "Arousal"]].isnull().values.any(), "NaNs in target labels"
-df_sampled = df.sample(frac=1, random_state=42).reset_index(drop=True)
+df_sampled = df.sample(frac=0.02, random_state=42).reset_index(drop=True)
 print(df_sampled.head())
 
 train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
@@ -291,10 +306,8 @@ test_dataset = EmotionDataset(test_df, processor)
 train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate, pin_memory=True, num_workers=4)
 test_dataloader = DataLoader(test_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate, pin_memory=True, num_workers=4)
 
-"""for batch in train_dataloader:
-    first_input_values = batch['input_values']  # Access first element of 'input_values' in the batch
-    print(first_input_values.shape)"""
-#print("Dataset Variance: "+torch.var(train_dataloader, unbiased=True))
 torch.cuda.empty_cache()  # Releases unoccupied cached memory.
 torch.cuda.reset_peak_memory_stats()  # Resets memory stats for accurate debugging.
 train(model, train_dataloader, test_dataloader, epochs = 3)
+
+#remember to do a scatterplot for valence and arousal like paper https://iopscience.iop.org/article/10.1088/1742-6596/1896/1/012004/pdf
