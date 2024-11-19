@@ -52,7 +52,7 @@ class RegressionHead(nn.Module):
         x = features
         #x = self.dropout(x)
         x = self.dense(x)
-        x = torch.sigmoid(x)        
+        x = torch.tanh(x)        
         #x = self.dropout(x)
         #x = self.out_proj(x)
 
@@ -172,6 +172,7 @@ def train(model, train_dataloader, test_dataloader, epochs=3, alpha=0.5, beta=0.
     checkpoint_path = "model_checkpoint_sampled.pth"
 
     for epoch in range(epochs):
+        model.gradient_checkpointing_enable()
         model.train()
         torch.cuda.empty_cache()
         epoch_loss = 0
@@ -185,7 +186,7 @@ def train(model, train_dataloader, test_dataloader, epochs=3, alpha=0.5, beta=0.
             
             optimizer.zero_grad()
             _, logits = model(input_values=input_values, attention_mask=attention_mask)
-            
+            print("logits:", logits)
             # Check label variance
             if labels[:, 0].var() == 0 or labels[:, 1].var() == 0:
                 print("Labels var = 0! Skipping batch.")
@@ -227,7 +228,7 @@ def validate(model, test_dataloader, alpha, beta):
             labels = batch['labels'].to(device)
             
             _, logits = model(input_values=input_values, attention_mask=attention_mask)
-
+            print("logits:", logits)
             if labels[:, 0].var() == 0 or labels[:, 1].var() == 0:
                 print("Labels var = 0! Skipping batch.")
                 continue
@@ -288,13 +289,12 @@ processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
 config = Wav2Vec2Config.from_pretrained(pretrained_model)
 config.num_labels = 2  # Ensure this matches the number of regression outputs (Valence, Arousal, Dominance)
 model = EmotionModel(config).to(return_device())
-model.gradient_checkpointing_enable()
 
 
 df = pd.read_pickle("data/full_data")
 print(df.shape)
 #assert not df[["Valence", "Arousal"]].isnull().values.any(), "NaNs in target labels"
-df_sampled = df.sample(frac=0.02, random_state=42).reset_index(drop=True)
+df_sampled = df.sample(frac=0.5, random_state=42).reset_index(drop=True)
 print(df_sampled.head())
 
 train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
