@@ -192,7 +192,11 @@ def train(model, train_dataloader, test_dataloader, epochs=3, alpha=0.5, beta=0.
             optimizer.zero_grad()
             _, logits = model(input_values=input_values, attention_mask=attention_mask)
             print("logits:", logits)
-            
+            print("labels:", labels)
+            #TODO Resolve this issue
+            if torch.any(torch.eq(labels,0)) or (labels[:, 0].var() == 0 or labels[:, 1].var() == 0):
+                print("Value equal to 0 or invariance in labels!")
+                continue
             # Compute CCC Loss for valence and arousal
             loss_val = ccc_loss(labels[:, 0], logits[:, 0]).mean()
             loss_ar = ccc_loss(labels[:, 1], logits[:, 1]).mean()
@@ -229,7 +233,10 @@ def validate(model, test_dataloader, alpha, beta):
             
             _, logits = model(input_values=input_values, attention_mask=attention_mask)
             print("logits:", logits)
-            
+
+            if torch.any(torch.eq(labels,0)) or (labels[:, 0].var() == 0 or labels[:, 1].var() == 0):
+                print("Value equal to 0 or invariance in labels!")
+                continue
             # Compute CCC Loss
             loss_val = ccc_loss(labels[:, 0], logits[:, 0]).mean()
             loss_ar = ccc_loss(labels[:, 1], logits[:, 1]).mean()
@@ -288,8 +295,8 @@ config.num_labels = 2  # Ensure this matches the number of regression outputs (V
 #cuda2 = torch.device('cuda:1')
 model = EmotionModel(config).to('cpu')
 
-df = pd.read_pickle("data/MuSe_useful")
-df_sampled = df.sample(frac=0.3, random_state=42).reset_index(drop=True)
+df = pd.read_pickle("data/full_data")
+df_sampled = df.sample(frac=0.1, random_state=42).reset_index(drop=True)
 print(df_sampled.head())
 
 train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
@@ -306,3 +313,8 @@ torch.cuda.reset_peak_memory_stats()  # Resets memory stats for accurate debuggi
 train(model, train_dataloader, test_dataloader, epochs = 5)
 
 #remember to do a scatterplot for valence and arousal like paper https://iopscience.iop.org/article/10.1088/1742-6596/1896/1/012004/pdf
+#when the user will test the model, try to:
+# - mix the two dataset for training (full_data)
+# - train with iemocap and test with muse
+# - train with muse and test with iemocap
+# - Make in the interface a selector for these three different models and check which is the most useful 
