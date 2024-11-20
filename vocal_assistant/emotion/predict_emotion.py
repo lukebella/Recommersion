@@ -73,7 +73,7 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         for param in self.wav2vec2.parameters():
             param.requires_grad = False
         self.classifier = RegressionHead(config)
-        self.init_weights()
+        #self.init_weights()
 
     def forward(
             self,
@@ -187,7 +187,7 @@ def train(model, train_dataloader, test_dataloader, epochs=3, alpha=0.5, beta=0.
         model.gradient_checkpointing_enable()
         model.train()
         epoch_loss = 0
-        gc.collect()
+        #gc.collect()
 
         # Training Loop
         for batch in tqdm(train_dataloader):
@@ -223,7 +223,7 @@ def train(model, train_dataloader, test_dataloader, epochs=3, alpha=0.5, beta=0.
         # Validation Loop
         validate(model, test_dataloader, alpha, beta)
         #torch.cuda.empty_cache()
-
+        #TODO undersand why in the last step there is a mismatch between batch and input
 
 # Validation Loop
 def validate(model, test_dataloader, alpha, beta):
@@ -301,7 +301,7 @@ config.num_labels = 2  # Ensure this matches the number of regression outputs (V
 model = EmotionModel(config).to(return_device())
 print(summary(model))
 df = pd.read_pickle("data/full_data")
-df_sampled = df.sample(frac=0.5, random_state=42).reset_index(drop=True)
+df_sampled = df.sample(frac=0.1, random_state=42).reset_index(drop=True)
 print(df_sampled.head())
 
 train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
@@ -310,8 +310,8 @@ train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
 train_dataset = EmotionDataset(train_df, processor)
 test_dataset = EmotionDataset(test_df, processor)
 
-train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate)#, pin_memory=True, num_workers=4)
-test_dataloader = DataLoader(test_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate)#, pin_memory=True, num_workers=4)
+train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate, drop_last=True)#, pin_memory=True, num_workers=4)
+test_dataloader = DataLoader(test_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate, drop_last=True)#, pin_memory=True, num_workers=4)
 
 #torch.cuda.empty_cache()  # Releases unoccupied cached memory.
 #torch.cuda.reset_peak_memory_stats()  # Resets memory stats for accurate debugging.
