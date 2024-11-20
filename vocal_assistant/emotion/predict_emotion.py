@@ -11,9 +11,11 @@ from torch.optim import AdamW
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from torch.nn.utils.rnn import pad_sequence
-import numpy as np
-from torchmetrics.regression import ConcordanceCorrCoef
+#import numpy as np
+#from torchmetrics.regression import ConcordanceCorrCoef
 import gc
+from torchinfo import summary
+
 
 class EmotionDataset(Dataset):
     def __init__(self, df, processor):
@@ -44,16 +46,16 @@ class RegressionHead(nn.Module):
         super().__init__()
 
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)
-        self.dropout = nn.Dropout(config.final_dropout)
+        #self.dropout = nn.Dropout(config.final_dropout)
         self.out_proj = nn.Linear(config.hidden_size, config.num_labels)
 
     def forward(self, features, **kwargs):
 
         x = features
-        x = self.dropout(x)
-        x = self.dense(x)
+        #x = self.dropout(x)
+        #x = self.dense(x)
         x = torch.tanh(x)        
-        x = self.dropout(x)
+        #x = self.dropout(x)
         x = self.out_proj(x)
 
         return x
@@ -68,6 +70,8 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
 
         self.config = config
         self.wav2vec2 = Wav2Vec2Model(config)
+        for param in self.wav2vec2.parameters():
+            param.requires_grad = False
         self.classifier = RegressionHead(config)
         self.init_weights()
 
@@ -178,7 +182,7 @@ def train(model, train_dataloader, test_dataloader, epochs=3, alpha=0.5, beta=0.
     model.to(device)
     optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
     checkpoint_path = "model_checkpoint_sampled.pth"
-
+    print("****TRAINING****")
     for epoch in range(epochs):
         model.gradient_checkpointing_enable()
         model.train()
@@ -207,17 +211,18 @@ def train(model, train_dataloader, test_dataloader, epochs=3, alpha=0.5, beta=0.
 
             # Backpropagation
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+            #torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
             optimizer.step()
 
             epoch_loss += loss.item()
-            torch.cuda.empty_cache()
+            
 
         print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {epoch_loss / len(train_dataloader)}")
         save_checkpoint(model, optimizer, epoch, checkpoint_path)
 
         # Validation Loop
         validate(model, test_dataloader, alpha, beta)
+        #torch.cuda.empty_cache()
 
 
 # Validation Loop
@@ -226,17 +231,19 @@ def validate(model, test_dataloader, alpha, beta):
     model.eval()
     val_loss = 0
     ccc_scores = {"valence": [], "arousal": []}
-
+    print("****VALIDATION****")
     with torch.no_grad():
-        for batch in test_dataloader:
+        for batch in tqdm(test_dataloader):
             input_values, attention_mask, labels = batch_values(batch, device)
-            
             _, logits = model(input_values=input_values, attention_mask=attention_mask)
-            print("logits:", logits)
-
+            """print("logits[:, 0]:", logits[:,0])
+            print("logits[:, 1]:", logits[:,1])
+            print("labels[:, 0]:", labels[:,0])
+            print("labels[:, 1]:", labels[:,1])"""
             if torch.any(torch.eq(labels,0)) or (labels[:, 0].var() == 0 or labels[:, 1].var() == 0):
                 print("Value equal to 0 or invariance in labels!")
                 continue
+            
             # Compute CCC Loss
             loss_val = ccc_loss(labels[:, 0], logits[:, 0]).mean()
             loss_ar = ccc_loss(labels[:, 1], logits[:, 1]).mean()
@@ -244,15 +251,13 @@ def validate(model, test_dataloader, alpha, beta):
             # Store raw CCC scores
             ccc_scores["valence"].append((1 - loss_val).item())  # Raw CCC
             ccc_scores["arousal"].append((1 - loss_ar).item())  # Raw CCC
-            
             # Total weighted loss
             loss = alpha * loss_val + beta * loss_ar
+            print(loss)
             val_loss += loss.item()
-
     # Average CCC scores
     avg_ccc_val = sum(ccc_scores["valence"]) / len(ccc_scores["valence"])
     avg_ccc_ar = sum(ccc_scores["arousal"]) / len(ccc_scores["arousal"])
-
     print(f"Validation Loss: {val_loss / len(test_dataloader)}")
     print(f"Average CCC - Valence: {avg_ccc_val:.4f}, Arousal: {avg_ccc_ar:.4f}")
 
@@ -293,10 +298,10 @@ processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
 config = Wav2Vec2Config.from_pretrained(pretrained_model)
 config.num_labels = 2  # Ensure this matches the number of regression outputs (Valence, Arousal, Dominance)
 #cuda2 = torch.device('cuda:1')
-model = EmotionModel(config).to('cpu')
-
+model = EmotionModel(config).to(return_device())
+print(summary(model))
 df = pd.read_pickle("data/full_data")
-df_sampled = df.sample(frac=0.1, random_state=42).reset_index(drop=True)
+df_sampled = df.sample(frac=0.5, random_state=42).reset_index(drop=True)
 print(df_sampled.head())
 
 train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
@@ -305,11 +310,11 @@ train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
 train_dataset = EmotionDataset(train_df, processor)
 test_dataset = EmotionDataset(test_df, processor)
 
-train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate, pin_memory=True, num_workers=4)
-test_dataloader = DataLoader(test_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate, pin_memory=True, num_workers=4)
+train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate)#, pin_memory=True, num_workers=4)
+test_dataloader = DataLoader(test_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate)#, pin_memory=True, num_workers=4)
 
-torch.cuda.empty_cache()  # Releases unoccupied cached memory.
-torch.cuda.reset_peak_memory_stats()  # Resets memory stats for accurate debugging.
+#torch.cuda.empty_cache()  # Releases unoccupied cached memory.
+#torch.cuda.reset_peak_memory_stats()  # Resets memory stats for accurate debugging.
 train(model, train_dataloader, test_dataloader, epochs = 5)
 
 #remember to do a scatterplot for valence and arousal like paper https://iopscience.iop.org/article/10.1088/1742-6596/1896/1/012004/pdf
@@ -318,3 +323,10 @@ train(model, train_dataloader, test_dataloader, epochs = 5)
 # - train with iemocap and test with muse
 # - train with muse and test with iemocap
 # - Make in the interface a selector for these three different models and check which is the most useful 
+
+
+#trovare un modo per spezzare i gradienti
+
+#pipeline parallelism naive
+#torch.cuda.memory_allocated
+#change to float32
