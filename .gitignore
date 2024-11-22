@@ -13,3 +13,4 @@ interface.py
 .stfolder
 *.wav
 .vscode
+parallelism.py

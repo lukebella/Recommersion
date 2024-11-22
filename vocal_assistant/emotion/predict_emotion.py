@@ -1,7 +1,4 @@
 import os
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-
-
 import torch
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
@@ -11,11 +8,33 @@ from torch.optim import AdamW
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from torch.nn.utils.rnn import pad_sequence
-#import numpy as np
-#from torchmetrics.regression import ConcordanceCorrCoef
-import gc
 from torchinfo import summary
+from torch.distributed.pipelining import pipeline, SplitPoint, pipe_split, Pipe
+from torch.fx import symbolic_trace
 
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp.wrap import (
+    size_based_auto_wrap_policy,
+    lambda_auto_wrap_policy
+)
+from torch.distributed import init_process_group
+from torchinfo import summary
+import datetime
+
+
+# Initialize Distributed Process Group for FSDP
+def initialize_distributed():
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = "29500"
+    os.environ["WORLD_SIZE"] = "2"
+    os.environ["RANK"] = os.getenv("LOCAL_RANK", "0")
+
+    init_process_group(backend="nccl", init_method="env://", timeout=datetime.timedelta(seconds=30))
+    torch.cuda.set_device(torch.distributed.get_rank())  # Set device based on rank
+
+def requires_grad_policy(module, recurse, *args, **kwargs):
+    """Wrap only modules that have trainable parameters."""
+    return any(p.requires_grad for p in module.parameters())
 
 class EmotionDataset(Dataset):
     def __init__(self, df, processor):
@@ -29,7 +48,6 @@ class EmotionDataset(Dataset):
         wav_data = self.df.iloc[idx]["wav_file"]  
         valence = self.df.iloc[idx]["Valence"]
         arousal = self.df.iloc[idx]["Arousal"]
-        #dominance = self.df.iloc[idx]["Dominance"]
         
         # Process audio input
         inputs = self.processor(wav_data, sampling_rate=16000, return_tensors="pt", padding=True)
@@ -73,7 +91,7 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         for param in self.wav2vec2.parameters():
             param.requires_grad = False
         self.classifier = RegressionHead(config)
-        #self.init_weights()
+        self.init_weights()
 
     def forward(
             self,
@@ -83,29 +101,12 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
 
         outputs = self.wav2vec2(input_values, attention_mask=attention_mask)
         hidden_states = outputs[0]
+        #pipe_split()
         hidden_states = torch.mean(hidden_states, dim=1)
         logits = self.classifier(hidden_states)
 
         return hidden_states, logits
-    
 
-
-"""class Wav2Vec2ForEmotionRegression(nn.Module):
-    def __init__(self):
-        super(Wav2Vec2ForEmotionRegression, self).__init__()
-        self.wav2vec2 = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base")
-        self.rnn = nn.LSTM(input_size=self.wav2vec2.config.hidden_size, hidden_size=128, num_layers=2, batch_first=True, bidirectional=True)
-        self.dropout = nn.Dropout()
-        self.regression_layer = nn.Linear(128 * 2, 3)  # 128 * 2 because it's bidirectional
-    
-    def forward(self, input_values, attention_mask=None):
-        outputs = self.wav2vec2(input_values=input_values, attention_mask=attention_mask)
-        hidden_states = outputs[0]
-        hidden_states = torch.mean(hidden_states, dim=1)
-        drop_out = self.dropout(hidden_states)
-        rnn_output, _ = self.rnn(drop_out)
-
-        return self.regression_layer(rnn_output)"""
 
 def custom_collate(batch):
     input_values = [item['input_values'].squeeze(0) for item in batch]
@@ -131,18 +132,6 @@ def save_checkpoint(model, optimizer, epoch, filename):
     torch.save(checkpoint, filename)
     print(f"Checkpoint saved at epoch {epoch + 1}")
 
-"""def load_checkpoint(model, optimizer, filename):
-    device = return_device()
-    if os.path.isfile(filename):
-        checkpoint = torch.load(filename, map_location=device)  
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint['epoch'] + 1
-        print(f"Resuming training from epoch {start_epoch}")
-        return start_epoch
-    else:
-        print("No checkpoint found, starting from scratch.")
-        return 0"""
     
 def return_device():
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Dynamically set device
@@ -158,40 +147,35 @@ def ccc(gold, pred):
     gold_var = torch.mean((gold - gold_mean) ** 2, dim=-1, keepdim=True)
     pred_var = torch.mean((pred - pred_mean) ** 2, dim=-1, keepdim=True)
 
-    pearson_coefficient = covariance/(torch.sqrt(gold_var) * torch.sqrt(pred_var))
+    #pearson_coefficient = covariance/(torch.sqrt(gold_var) * torch.sqrt(pred_var))
     
-    ccc = (2 * pearson_coefficient * covariance) / (gold_var + pred_var + (gold_mean - pred_mean) ** 2 + 1e-7)
+    ccc = (2 * covariance) / (gold_var + pred_var + (gold_mean - pred_mean) ** 2 + 1e-7)
     return ccc
 
 def ccc_loss(gold, pred):
     ccc_loss = 1 - ccc(gold, pred)
     return ccc_loss
 
-def batch_values(batch, device):
-    input_values = batch['input_values'].to(device)
-    attention_mask = batch['attention_mask'].to(device)
-    labels = batch['labels'].to(device)
+def batch_values(batch):
+    input_values = batch['input_values'].to(return_device())
+    attention_mask = batch['attention_mask'].to(return_device())
+    labels = batch['labels'].to(return_device())
 
     return input_values, attention_mask, labels
 
-def train(model, train_dataloader, test_dataloader, epochs=3, alpha=0.5, beta=0.5):
+def train(model, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0.5, beta=0.5):
     """
     Train the model using CCC loss for valence and arousal.
     """
-    device = return_device()
-    model.to(device)
-    optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
     checkpoint_path = "model_checkpoint_sampled.pth"
     print("****TRAINING****")
     for epoch in range(epochs):
-        model.gradient_checkpointing_enable()
         model.train()
         epoch_loss = 0
-        #gc.collect()
 
         # Training Loop
         for batch in tqdm(train_dataloader):
-            input_values, attention_mask, labels = batch_values(batch, device)
+            input_values, attention_mask, labels = batch_values(batch)
             
             optimizer.zero_grad()
             _, logits = model(input_values=input_values, attention_mask=attention_mask)
@@ -210,12 +194,18 @@ def train(model, train_dataloader, test_dataloader, epochs=3, alpha=0.5, beta=0.
             print(f"Loss (valence): {loss_val.item()}, Loss (arousal): {loss_ar.item()}, Total: {loss.item()}")
 
             # Backpropagation
+            print("before backpropagation")
+
             loss.backward()
+            print("after backpropagation")
+            torch.distributed.barrier()
+
             #torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
             optimizer.step()
 
             epoch_loss += loss.item()
-            
+            print("Allocated:", torch.cuda.memory_allocated(), "Reserved:", torch.cuda.memory_reserved())
+
 
         print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {epoch_loss / len(train_dataloader)}")
         save_checkpoint(model, optimizer, epoch, checkpoint_path)
@@ -236,10 +226,7 @@ def validate(model, test_dataloader, alpha, beta):
         for batch in tqdm(test_dataloader):
             input_values, attention_mask, labels = batch_values(batch, device)
             _, logits = model(input_values=input_values, attention_mask=attention_mask)
-            """print("logits[:, 0]:", logits[:,0])
-            print("logits[:, 1]:", logits[:,1])
-            print("labels[:, 0]:", labels[:,0])
-            print("labels[:, 1]:", labels[:,1])"""
+            
             if torch.any(torch.eq(labels,0)) or (labels[:, 0].var() == 0 or labels[:, 1].var() == 0):
                 print("Value equal to 0 or invariance in labels!")
                 continue
@@ -255,6 +242,7 @@ def validate(model, test_dataloader, alpha, beta):
             loss = alpha * loss_val + beta * loss_ar
             print(loss)
             val_loss += loss.item()
+
     # Average CCC scores
     avg_ccc_val = sum(ccc_scores["valence"]) / len(ccc_scores["valence"])
     avg_ccc_ar = sum(ccc_scores["arousal"]) / len(ccc_scores["arousal"])
@@ -291,31 +279,49 @@ def predict_emotion(model, processor, wav_data):
     
     return outputs[1]
 
+
+def main():
+    initialize_distributed()
+
+    pretrained_model = "facebook/wav2vec2-base"
+    processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
+    config = Wav2Vec2Config.from_pretrained(pretrained_model)
+    config.num_labels = 2  # Ensure this matches the number of regression outputs (Valence, Arousal)
+    
+    model = EmotionModel(config).to(return_device())
+    model.gradient_checkpointing_enable()
+    model = FSDP(model, auto_wrap_policy=requires_grad_policy, use_orig_params=True)
+
+    print(summary(model))
+    df = pd.read_pickle("data/full_data")
+    df_sampled = df.sample(frac=0.5, random_state=42).reset_index(drop=True)
+    print(df_sampled.head())
+
+    train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
+
+    train_dataset = EmotionDataset(train_df, processor)
+    test_dataset = EmotionDataset(test_df, processor)
+
+    train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate)#, drop_last=True, num_workers=4)#, pin_memory=True
+    test_dataloader = DataLoader(test_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate)#, drop_last=True, num_workers=4)#, pin_memory=True)
+
+
+    # Place parts on different GPUs
+    #model.wav2vec2.to("cuda:0")
+    #model.classifier.to("cuda:1")
+    #graph_model = symbolic_trace(model)
+    # Wrap in a pipeline
+    #pipe = Pipe(graph_model, num_stages=2, \
+    #            has_loss_and_backward=True, loss_spec=ccc_loss)  # Chunks determine micro-batches
+    optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
+    train(model, train_dataloader, test_dataloader, optimizer, epochs = 5)
+
+
+
 #if __name__ == "__main ":
-pretrained_model = "facebook/wav2vec2-base"
-processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
-#model = Wav2Vec2ForEmotionRegression().to(return_device())
-config = Wav2Vec2Config.from_pretrained(pretrained_model)
-config.num_labels = 2  # Ensure this matches the number of regression outputs (Valence, Arousal, Dominance)
-#cuda2 = torch.device('cuda:1')
-model = EmotionModel(config).to(return_device())
-print(summary(model))
-df = pd.read_pickle("data/full_data")
-df_sampled = df.sample(frac=0.1, random_state=42).reset_index(drop=True)
-print(df_sampled.head())
+main()
 
-train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
 
-# Create datasets
-train_dataset = EmotionDataset(train_df, processor)
-test_dataset = EmotionDataset(test_df, processor)
-
-train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate, drop_last=True)#, pin_memory=True, num_workers=4)
-test_dataloader = DataLoader(test_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate, drop_last=True)#, pin_memory=True, num_workers=4)
-
-#torch.cuda.empty_cache()  # Releases unoccupied cached memory.
-#torch.cuda.reset_peak_memory_stats()  # Resets memory stats for accurate debugging.
-train(model, train_dataloader, test_dataloader, epochs = 5)
 
 #remember to do a scatterplot for valence and arousal like paper https://iopscience.iop.org/article/10.1088/1742-6596/1896/1/012004/pdf
 #when the user will test the model, try to:
