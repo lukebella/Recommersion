@@ -9,28 +9,38 @@ from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from torch.nn.utils.rnn import pad_sequence
 from torchinfo import summary
-from torch.distributed.pipelining import pipeline, SplitPoint, pipe_split, Pipe
-from torch.fx import symbolic_trace
 
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp.wrap import (
-    size_based_auto_wrap_policy,
-    lambda_auto_wrap_policy
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
+    BackwardPrefetch,
+    CPUOffload
 )
-from torch.distributed import init_process_group
+from torch.distributed.fsdp.fully_sharded_data_parallel import (
+    ShardingStrategy,
+)
+from torch.distributed.fsdp.wrap import (
+    transformer_auto_wrap_policy,
+)
+from transformers.models.gpt_bigcode.modeling_gpt_bigcode import GPTBigCodeBlock
+
+from torch.distributed import init_process_group, all_reduce
 from torchinfo import summary
 import datetime
-
+import functools
 
 # Initialize Distributed Process Group for FSDP
-def initialize_distributed():
+def initialize_distributed():   
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", rank))
+    world_size = int(os.environ.get("WORLD_SIZE", "2"))
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = "29500"
-    os.environ["WORLD_SIZE"] = "2"
-    os.environ["RANK"] = os.getenv("LOCAL_RANK", "0")
+    os.environ["WORLD_SIZE"] = str(world_size)
+    os.environ["RANK"] = str(rank)
 
-    init_process_group(backend="nccl", init_method="env://", timeout=datetime.timedelta(seconds=30))
-    torch.cuda.set_device(torch.distributed.get_rank())  # Set device based on rank
+    torch.cuda.set_device(local_rank)
+    init_process_group(backend="nccl", rank=rank, world_size=world_size, timeout=datetime.timedelta(seconds=60))
+    
 
 def requires_grad_policy(module, recurse, *args, **kwargs):
     """Wrap only modules that have trainable parameters."""
@@ -156,6 +166,9 @@ def ccc_loss(gold, pred):
     ccc_loss = 1 - ccc(gold, pred)
     return ccc_loss
 
+def distributed_loss(tensor, rank = int(os.environ.get("RANK", "1"))):
+    return all_reduce(tensor, op=torch.distributed.ReduceOp.SUM)/rank
+
 def batch_values(batch):
     input_values = batch['input_values'].to(return_device())
     attention_mask = batch['attention_mask'].to(return_device())
@@ -198,12 +211,17 @@ def train(model, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0
 
             loss.backward()
             print("after backpropagation")
-            torch.distributed.barrier()
+            #torch.distributed.barrier()
 
             #torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
             optimizer.step()
+            #loss = loss.detach()
 
-            epoch_loss += loss.item()
+            # avg loss over all processes
+            loss_tensor = torch.tensor(loss.item(), device=return_device())
+            print("Loss Tensor:",loss_tensor)
+            #loss = distributed_loss(loss_tensor).item()
+            epoch_loss += loss
             print("Allocated:", torch.cuda.memory_allocated(), "Reserved:", torch.cuda.memory_reserved())
 
 
@@ -290,7 +308,11 @@ def main():
     
     model = EmotionModel(config).to(return_device())
     model.gradient_checkpointing_enable()
-    model = FSDP(model, auto_wrap_policy=requires_grad_policy, use_orig_params=True)
+
+
+    model = FSDP(model, auto_wrap_policy=requires_grad_policy, use_orig_params=True, sync_module_states=True,\
+                 sharding_strategy=ShardingStrategy.SHARD_GRAD_OP, backward_prefetch=BackwardPrefetch.BACKWARD_PRE)
+                 #,cpu_offload=CPUOffload(offload_params=True))
 
     print(summary(model))
     df = pd.read_pickle("data/full_data")
@@ -302,8 +324,10 @@ def main():
     train_dataset = EmotionDataset(train_df, processor)
     test_dataset = EmotionDataset(test_df, processor)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate)#, drop_last=True, num_workers=4)#, pin_memory=True
-    test_dataloader = DataLoader(test_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate)#, drop_last=True, num_workers=4)#, pin_memory=True)
+    train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate, \
+                                 num_workers=4, pin_memory=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate, \
+                                 num_workers=4, pin_memory=True)
 
 
     # Place parts on different GPUs
@@ -336,3 +360,5 @@ main()
 #pipeline parallelism naive
 #torch.cuda.memory_allocated
 #change to float32
+
+#For execute it: CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 vocal_assistant/emotion/predict_emotion.py
