@@ -20,15 +20,13 @@ from torch.distributed.fsdp import (
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     ShardingStrategy,
 )
-from torch.distributed.fsdp.wrap import (
-    transformer_auto_wrap_policy,
-)
+
 from transformers.models.gpt_bigcode.modeling_gpt_bigcode import GPTBigCodeBlock
 
 from torch.distributed import init_process_group, all_reduce
 from torchinfo import summary
 import datetime
-import functools
+
 
 # Initialize Distributed Process Group for FSDP
 def initialize_distributed():   
@@ -168,16 +166,73 @@ def ccc_loss(gold, pred):
     return ccc_loss
 
 def distributed_loss(tensor, world):
-    return all_reduce(tensor, op=torch.distributed.ReduceOp.SUM) / world
+    return all_reduce(tensor, op=dist.ReduceOp.SUM) / world
 
-def batch_values(batch):
-    input_values = batch['input_values'].to(return_device())
-    attention_mask = batch['attention_mask'].to(return_device())
-    labels = batch['labels'].to(return_device())
+def batch_values(batch, device):
+    input_values = batch['input_values'].to(device)
+    attention_mask = batch['attention_mask'].to(device)
+    labels = batch['labels'].to(device)
 
     return input_values, attention_mask, labels
 
-def train(model, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0.5, beta=0.5):
+
+def compute_loss(model, device, batch, alpha, beta):
+    input_values, attention_mask, labels = batch_values(batch, device)
+    
+    #TODO Resolve this issue
+    if torch.any(torch.eq(labels,0)) or (labels[:, 0].var() == 0 or labels[:, 1].var() == 0):
+        print("Value equal to 0 or invariance in labels!")
+        return None
+
+    _, logits = model(input_values=input_values, attention_mask=attention_mask)
+    print("logits:", logits)
+    print("labels:", labels)
+    
+    # Compute CCC Loss for valence and arousal
+    loss_val = ccc_loss(labels[:, 0], logits[:, 0]).mean()
+    loss_ar = ccc_loss(labels[:, 1], logits[:, 1]).mean()
+
+    # Weighted total loss
+    loss = alpha * loss_val + beta * loss_ar
+    print(f"Loss (valence): {loss_val.item()}, Loss (arousal): {loss_ar.item()}, Total: {loss.item()}")
+
+    return loss
+
+def train_cpu(model, train_dataloader, test_dataloader, optimizer, epochs, alpha, beta):
+    """
+    Train the model using CCC loss for valence and arousal.
+    """
+    #TODO try to refactor with Accelerate (HuggingFace)
+    model.train()
+    checkpoint_path = "model_checkpoint_sampled.pth"
+    print("****TRAINING****")
+    for epoch in range(epochs):
+        epoch_loss = 0
+
+        # Training Loop
+        for batch in tqdm(train_dataloader):
+            optimizer.zero_grad()
+            loss = compute_loss(model, 'cpu', batch, alpha, beta)
+            if loss is None: continue 
+
+            # Backpropagation
+            print("before backpropagation")
+            loss.backward()
+            print("after backpropagation")
+
+            optimizer.step()
+            #loss = loss.detach()
+            # avg loss over all processes
+            epoch_loss += loss
+
+        print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {epoch_loss / len(train_dataloader)}")
+        save_checkpoint(model, optimizer, epoch, checkpoint_path)
+
+        # Validation Loop
+        validate(model, test_dataloader, alpha, beta)
+        #TODO undersand why in the last step there is a mismatch between batch and input
+
+def train_gpu(model, train_dataloader, test_dataloader, optimizer, epochs, alpha, beta):
     """
     Train the model using CCC loss for valence and arousal.
     """
@@ -191,33 +246,15 @@ def train(model, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0
 
         # Training Loop
         for batch in tqdm(train_dataloader):
-            input_values, attention_mask, labels = batch_values(batch)
-            
             optimizer.zero_grad()
-
-            #TODO Resolve this issue
-            if torch.any(torch.eq(labels,0)) or (labels[:, 0].var() == 0 or labels[:, 1].var() == 0):
-                print("Value equal to 0 or invariance in labels!")
-                continue
-
-            _, logits = model(input_values=input_values, attention_mask=attention_mask)
-            print("logits:", logits)
-            print("labels:", labels)
-            
-            # Compute CCC Loss for valence and arousal
-            loss_val = ccc_loss(labels[:, 0], logits[:, 0]).mean()
-            loss_ar = ccc_loss(labels[:, 1], logits[:, 1]).mean()
-
-            # Weighted total loss
-            loss = alpha * loss_val + beta * loss_ar
-            print(f"Loss (valence): {loss_val.item()}, Loss (arousal): {loss_ar.item()}, Total: {loss.item()}")
+            loss = compute_loss(model, 'cuda', batch, alpha, beta)
+            if loss is None: continue 
 
             # Backpropagation
             print("before backpropagation")
-
             loss.backward()
             print("after backpropagation")
-            #torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+
             optimizer.step()
             #loss = loss.detach()
             dist.barrier()
@@ -235,48 +272,31 @@ def train(model, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0
 
         # Validation Loop
         validate(model, test_dataloader, alpha, beta)
-        #torch.cuda.empty_cache()
         #TODO undersand why in the last step there is a mismatch between batch and input
+
+def train(model, device, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0.5, beta=0.5):
+    if device == 'cpu':
+        train_cpu(model, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0.5, beta=0.5)
+    else: train_gpu(model, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0.5, beta=0.5)
+
 
 # Validation Loop
 def validate(model, test_dataloader, alpha, beta):
-    device = return_device()
     model.eval()
     val_loss = 0
-    ccc_scores = {"valence": [], "arousal": []}
     print("****VALIDATION****")
     with torch.no_grad():
         for batch in tqdm(test_dataloader):
-            input_values, attention_mask, labels = batch_values(batch, device)
-
-            if torch.any(torch.eq(labels,0)) or (labels[:, 0].var() == 0 or labels[:, 1].var() == 0):
-                print("Value equal to 0 or invariance in labels!")
-                continue
-
-            _, logits = model(input_values=input_values, attention_mask=attention_mask)
-            
-            # Compute CCC Loss
-            loss_val = ccc_loss(labels[:, 0], logits[:, 0]).mean()
-            loss_ar = ccc_loss(labels[:, 1], logits[:, 1]).mean()
-            
-            # Store raw CCC scores
-            ccc_scores["valence"].append((1 - loss_val).item())  # Raw CCC
-            ccc_scores["arousal"].append((1 - loss_ar).item())  # Raw CCC
-            # Total weighted loss
-            loss = alpha * loss_val + beta * loss_ar
+            loss = compute_loss(model, batch, alpha, beta)
+            if loss is None: continue
             print(loss)
             val_loss += loss.item()
 
     # Average CCC scores
-    avg_ccc_val = sum(ccc_scores["valence"]) / len(ccc_scores["valence"])
-    avg_ccc_ar = sum(ccc_scores["arousal"]) / len(ccc_scores["arousal"])
     print(f"Validation Loss: {val_loss / len(test_dataloader)}")
-    print(f"Average CCC - Valence: {avg_ccc_val:.4f}, Arousal: {avg_ccc_ar:.4f}")
 
 
-def load_trained_model(checkpoint_path, pretrained_model):
-    device = return_device()
-    #model = Wav2Vec2ForEmotionRegression().to(device)
+def load_trained_model(device, checkpoint_path, pretrained_model):
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
     config.num_labels = 2  # Ensure this matches the number of regression outputs (Valence, Arousal, Dominance)
     model = EmotionModel(config).to(device)
@@ -291,8 +311,8 @@ def load_trained_model(checkpoint_path, pretrained_model):
     
     return model, processor
 
-def predict_emotion(model, processor, wav_data):
-    device = return_device()
+
+def predict_emotion(model, device, processor, wav_data):
     model.eval()
     inputs = processor(wav_data, sampling_rate=16000, return_tensors="pt", padding=True)
     input_values = inputs['input_values'].to(device)
@@ -305,22 +325,14 @@ def predict_emotion(model, processor, wav_data):
 
 
 def main():
-    initialize_distributed()
-
+    device = 'cpu' #return_device()
     pretrained_model = "facebook/wav2vec2-base"
     processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
-    config.num_labels = 2  # Ensure this matches the number of regression outputs (Valence, Arousal)
-    
-    model = EmotionModel(config).to(return_device())
+    config.num_labels = 2  # Ensure this matches the number of regression outputs (Valence, Arousal)  
+    model = EmotionModel(config).to(device)
     model.gradient_checkpointing_enable()
 
-
-    model = FSDP(model, auto_wrap_policy=requires_grad_policy, use_orig_params=True, sync_module_states=True,\
-                 sharding_strategy=ShardingStrategy.FULL_SHARD, backward_prefetch=BackwardPrefetch.BACKWARD_PRE)
-                 #,cpu_offload=CPUOffload(offload_params=True))
-
-    print(summary(model))
     df = pd.read_pickle("data/full_data")
     df_sampled = df.sample(frac=0.5, random_state=42).reset_index(drop=True)
     print(df_sampled.head())
@@ -330,23 +342,30 @@ def main():
     train_dataset = EmotionDataset(train_df, processor)
     test_dataset = EmotionDataset(test_df, processor)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=2, sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=True),\
+
+    if device == 'cuda':
+        initialize_distributed()
+        model = FSDP(model, auto_wrap_policy=requires_grad_policy, use_orig_params=True, sync_module_states=True,\
+                 sharding_strategy=ShardingStrategy.FULL_SHARD, backward_prefetch=BackwardPrefetch.BACKWARD_PRE)
+                 #,cpu_offload=CPUOffload(offload_params=True))
+        train_dataloader = DataLoader(train_dataset, batch_size=2, sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=True),\
                                  collate_fn=custom_collate, \
                                  num_workers=4, pin_memory=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=2, sampler=DistributedSampler(test_dataset, shuffle=True, drop_last=True),   
+        test_dataloader = DataLoader(test_dataset, batch_size=2, sampler=DistributedSampler(test_dataset, shuffle=True, drop_last=True),   
+                                 collate_fn=custom_collate, \
+                                 num_workers=4, pin_memory=True)  
+
+
+    print(summary(model))
+    train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True,\
                                  collate_fn=custom_collate, \
                                  num_workers=4, pin_memory=True)
-
-
-    # Place parts on different GPUs
-    #model.wav2vec2.to("cuda:0")
-    #model.classifier.to("cuda:1")
-    #graph_model = symbolic_trace(model)
-    # Wrap in a pipeline
-    #pipe = Pipe(graph_model, num_stages=2, \
-    #            has_loss_and_backward=True, loss_spec=ccc_loss)  # Chunks determine micro-batches
+    test_dataloader = DataLoader(test_dataset, batch_size=2,shuffle=True,\
+                                 collate_fn=custom_collate, \
+                                 num_workers=4, pin_memory=True)
+    
     optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
-    train(model, train_dataloader, test_dataloader, optimizer, epochs = 5)
+    train(model, device, train_dataloader, test_dataloader, optimizer, epochs = 5)
 
 
 
