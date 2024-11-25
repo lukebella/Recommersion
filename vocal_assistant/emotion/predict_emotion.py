@@ -259,10 +259,10 @@ def train_gpu(model, train_dataloader, test_dataloader, optimizer, epochs, alpha
             #loss = loss.detach()
             dist.barrier()
             # avg loss over all processes
-            loss_tensor = loss.clone().detach()
+            """loss_tensor = loss.clone().detach()
             print("Loss Tensor:",loss_tensor)
             loss = distributed_loss(loss_tensor, float(dist.get_world_size())).item()
-            print("reduction loss:", loss)
+            print("reduction loss:", loss)"""
             epoch_loss += loss
             print("Allocated:", torch.cuda.memory_allocated(), "Reserved:", torch.cuda.memory_reserved())
 
@@ -325,6 +325,8 @@ def predict_emotion(model, device, processor, wav_data):
 
 
 def main():
+    initialize_distributed()
+
     device = 'cpu' #return_device()
     pretrained_model = "facebook/wav2vec2-base"
     processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
@@ -343,11 +345,11 @@ def main():
     test_dataset = EmotionDataset(test_df, processor)
 
 
-    if device == 'cuda':
-        initialize_distributed()
+    if device!='cpu':
         model = FSDP(model, auto_wrap_policy=requires_grad_policy, use_orig_params=True, sync_module_states=True,\
                  sharding_strategy=ShardingStrategy.FULL_SHARD, backward_prefetch=BackwardPrefetch.BACKWARD_PRE)
                  #,cpu_offload=CPUOffload(offload_params=True))
+        
         train_dataloader = DataLoader(train_dataset, batch_size=2, sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=True),\
                                  collate_fn=custom_collate, \
                                  num_workers=4, pin_memory=True)
