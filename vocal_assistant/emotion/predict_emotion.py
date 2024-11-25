@@ -10,6 +10,8 @@ from sklearn.model_selection import train_test_split
 from torch.nn.utils.rnn import pad_sequence
 from torchinfo import summary
 
+from torch.utils.data.distributed import DistributedSampler
+import torch.distributed as dist
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
     BackwardPrefetch,
@@ -111,7 +113,6 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
 
         outputs = self.wav2vec2(input_values, attention_mask=attention_mask)
         hidden_states = outputs[0]
-        #pipe_split()
         hidden_states = torch.mean(hidden_states, dim=1)
         logits = self.classifier(hidden_states)
 
@@ -166,8 +167,8 @@ def ccc_loss(gold, pred):
     ccc_loss = 1 - ccc(gold, pred)
     return ccc_loss
 
-def distributed_loss(tensor, rank = int(os.environ.get("RANK", "1"))):
-    return all_reduce(tensor, op=torch.distributed.ReduceOp.SUM)/rank
+def distributed_loss(tensor, world):
+    return all_reduce(tensor, op=torch.distributed.ReduceOp.SUM) / world
 
 def batch_values(batch):
     input_values = batch['input_values'].to(return_device())
@@ -180,10 +181,12 @@ def train(model, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0
     """
     Train the model using CCC loss for valence and arousal.
     """
+    #TODO try to refactor with Accelerate (HuggingFace)
+    dist.barrier()
+    model.train()
     checkpoint_path = "model_checkpoint_sampled.pth"
     print("****TRAINING****")
     for epoch in range(epochs):
-        model.train()
         epoch_loss = 0
 
         # Training Loop
@@ -191,13 +194,16 @@ def train(model, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0
             input_values, attention_mask, labels = batch_values(batch)
             
             optimizer.zero_grad()
-            _, logits = model(input_values=input_values, attention_mask=attention_mask)
-            print("logits:", logits)
-            print("labels:", labels)
+
             #TODO Resolve this issue
             if torch.any(torch.eq(labels,0)) or (labels[:, 0].var() == 0 or labels[:, 1].var() == 0):
                 print("Value equal to 0 or invariance in labels!")
                 continue
+
+            _, logits = model(input_values=input_values, attention_mask=attention_mask)
+            print("logits:", logits)
+            print("labels:", labels)
+            
             # Compute CCC Loss for valence and arousal
             loss_val = ccc_loss(labels[:, 0], logits[:, 0]).mean()
             loss_ar = ccc_loss(labels[:, 1], logits[:, 1]).mean()
@@ -211,16 +217,15 @@ def train(model, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0
 
             loss.backward()
             print("after backpropagation")
-            #torch.distributed.barrier()
-
             #torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
             optimizer.step()
             #loss = loss.detach()
-
+            dist.barrier()
             # avg loss over all processes
-            loss_tensor = torch.tensor(loss.item(), device=return_device())
+            loss_tensor = loss.clone().detach()
             print("Loss Tensor:",loss_tensor)
-            #loss = distributed_loss(loss_tensor).item()
+            loss = distributed_loss(loss_tensor, float(dist.get_world_size())).item()
+            print("reduction loss:", loss)
             epoch_loss += loss
             print("Allocated:", torch.cuda.memory_allocated(), "Reserved:", torch.cuda.memory_reserved())
 
@@ -243,11 +248,12 @@ def validate(model, test_dataloader, alpha, beta):
     with torch.no_grad():
         for batch in tqdm(test_dataloader):
             input_values, attention_mask, labels = batch_values(batch, device)
-            _, logits = model(input_values=input_values, attention_mask=attention_mask)
-            
+
             if torch.any(torch.eq(labels,0)) or (labels[:, 0].var() == 0 or labels[:, 1].var() == 0):
                 print("Value equal to 0 or invariance in labels!")
                 continue
+
+            _, logits = model(input_values=input_values, attention_mask=attention_mask)
             
             # Compute CCC Loss
             loss_val = ccc_loss(labels[:, 0], logits[:, 0]).mean()
@@ -311,7 +317,7 @@ def main():
 
 
     model = FSDP(model, auto_wrap_policy=requires_grad_policy, use_orig_params=True, sync_module_states=True,\
-                 sharding_strategy=ShardingStrategy.SHARD_GRAD_OP, backward_prefetch=BackwardPrefetch.BACKWARD_PRE)
+                 sharding_strategy=ShardingStrategy.FULL_SHARD, backward_prefetch=BackwardPrefetch.BACKWARD_PRE)
                  #,cpu_offload=CPUOffload(offload_params=True))
 
     print(summary(model))
@@ -324,9 +330,11 @@ def main():
     train_dataset = EmotionDataset(train_df, processor)
     test_dataset = EmotionDataset(test_df, processor)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate, \
+    train_dataloader = DataLoader(train_dataset, batch_size=2, sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=True),\
+                                 collate_fn=custom_collate, \
                                  num_workers=4, pin_memory=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=2, shuffle=True, collate_fn=custom_collate, \
+    test_dataloader = DataLoader(test_dataset, batch_size=2, sampler=DistributedSampler(test_dataset, shuffle=True, drop_last=True),   
+                                 collate_fn=custom_collate, \
                                  num_workers=4, pin_memory=True)
 
 
