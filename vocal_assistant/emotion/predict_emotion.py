@@ -15,6 +15,7 @@ import torch.distributed as dist
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
     BackwardPrefetch,
+    CPUOffload
 )
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     ShardingStrategy,
@@ -28,6 +29,8 @@ from torch.distributed import init_process_group, all_reduce
 from torchinfo import summary
 import datetime
 import functools
+
+
 
 # Initialize Distributed Process Group for FSDP
 def initialize_distributed():   
@@ -137,6 +140,7 @@ def save_checkpoint(model, optimizer, epoch, filename):
         'optimizer_state_dict': optimizer.state_dict(),
         'epoch': epoch
     }
+    
     torch.save(checkpoint, filename)
     print(f"Checkpoint saved at epoch {epoch + 1}")
 
@@ -212,12 +216,12 @@ def train_cpu(model, checkpoint_path, train_dataloader, test_dataloader, optimiz
             if loss is None: continue 
 
             # Backpropagation
-            print("before backpropagation")
+            #print("before backpropagation")
             loss.backward()
-            print("after backpropagation")
+            #print("after backpropagation")
 
             optimizer.step()
-            #loss = loss.detach()
+            loss = loss.detach()
             # avg loss over all processes
             epoch_loss += loss
 
@@ -225,7 +229,7 @@ def train_cpu(model, checkpoint_path, train_dataloader, test_dataloader, optimiz
         save_checkpoint(model, optimizer, epoch, checkpoint_path)
 
         # Validation Loop
-        validate(model, test_dataloader, alpha, beta)
+        validate(model, 'cpu', test_dataloader, alpha, beta)
         #TODO undersand why in the last step there is a mismatch between batch and input
 
 def train_gpu(model, checkpoint_path, train_dataloader, test_dataloader, optimizer, epochs, alpha, beta):
@@ -235,7 +239,7 @@ def train_gpu(model, checkpoint_path, train_dataloader, test_dataloader, optimiz
     #TODO try to refactor with Accelerate (HuggingFace)
     for epoch in range(epochs):
         epoch_loss = 0
-
+        train_dataloader.sampler.set_epoch(epoch)
         # Training Loop
         for batch in tqdm(train_dataloader):
             optimizer.zero_grad()
@@ -243,33 +247,36 @@ def train_gpu(model, checkpoint_path, train_dataloader, test_dataloader, optimiz
             if loss is None: continue 
 
             # Backpropagation
-            print("before backpropagation")
-            print("\tAllocated:", torch.cuda.memory_allocated(), "Reserved:", torch.cuda.memory_reserved())
+            #print("before backpropagation")
+            # print("\tMemory allocated:", torch.cuda.memory_allocated() / 1e9, "GB")
+            # print("\tMemory reserved:", torch.cuda.memory_reserved() / 1e9, "GB")
+
             dist.barrier()
-            loss_tensor = loss.clone()
-            
+            """loss_tensor = loss.clone()
+
             print("Loss Tensor:",loss_tensor)
             loss_dis = distributed_loss(loss_tensor, float(dist.get_world_size())).item()
             print("reduction loss:", loss_dis)
-        
-            epoch_loss += loss_dis
-
-            dist.barrier()
+            dist.barrier()"""
 
             loss.backward()
-            print("after backpropagation")
-            print("\tAllocated:", torch.cuda.memory_allocated(), "Reserved:", torch.cuda.memory_reserved())
+            # print("after backpropagation")
+            # print("\tMemory allocated:", torch.cuda.memory_allocated() / 1e9, "GB")
+            # print("\tMemory reserved:", torch.cuda.memory_reserved() / 1e9, "GB")
 
             optimizer.step()
-            #loss = loss.detach()
+            loss = loss.detach()
             # avg loss over all processes
-
+            epoch_loss += loss
 
         print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {epoch_loss / len(train_dataloader)}")
+        dist.barrier()
+        #if dist.get_rank()==0:
         save_checkpoint(model, optimizer, epoch, checkpoint_path)
+        dist.barrier()
 
         # Validation Loop
-        validate(model, test_dataloader, alpha, beta)
+        validate(model, 'cuda', test_dataloader, alpha, beta)
         #TODO undersand why in the last step there is a mismatch between batch and input
 
 
@@ -283,13 +290,13 @@ def train(model, device, train_dataloader, test_dataloader, optimizer, epochs=3,
 
 
 # Validation Loop
-def validate(model, test_dataloader, alpha, beta):
+def validate(model, device, test_dataloader, alpha, beta):
     model.eval()
     val_loss = 0
     print("****VALIDATION****")
     with torch.no_grad():
         for batch in tqdm(test_dataloader):
-            loss = compute_loss(model, batch, alpha, beta)
+            loss = compute_loss(model, device, batch, alpha, beta)
             if loss is None: continue
             print(loss)
             val_loss += loss.item()
@@ -300,7 +307,6 @@ def validate(model, test_dataloader, alpha, beta):
 
 def load_trained_model(device, checkpoint_path, pretrained_model):
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
-    config.num_labels = 2  # Ensure this matches the number of regression outputs (Valence, Arousal, Dominance)
     model = EmotionModel(config).to(device)
     processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
     
@@ -334,12 +340,10 @@ def main():
     pretrained_model = "patrickvonplaten/wav2vec2_tiny_random_robust" #"facebook/wav2vec2-base"
     processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
-    config.num_labels = 2  # Ensure this matches the number of regression outputs (Valence, Arousal)  
     model = EmotionModel(config).to(device)
     model.gradient_checkpointing_enable()
 
-    df = pd.read_pickle("data/full_data").sample(frac=1, random_state=42)\
-           .reset_index(drop=True)
+    df = pd.read_pickle("data/full_data").sample(frac=1, random_state=42).reset_index(drop=True)
     print(df.head())
 
     train_df, test_df = train_test_split(df, test_size=0.25, random_state=42)
@@ -353,28 +357,27 @@ def main():
             size_based_auto_wrap_policy, min_num_params=100
         )
         model = FSDP(model, auto_wrap_policy=my_auto_wrap_policy, use_orig_params=True, sync_module_states=True,\
-                 sharding_strategy=ShardingStrategy.FULL_SHARD, backward_prefetch=BackwardPrefetch.BACKWARD_PRE)
-                 #,cpu_offload=CPUOffload(offload_params=True))
+                 sharding_strategy=ShardingStrategy.FULL_SHARD, backward_prefetch=BackwardPrefetch.BACKWARD_PRE
+                 ,cpu_offload=CPUOffload(offload_params=True))
         
-        train_dataloader = DataLoader(train_dataset, batch_size=16, sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=True),\
-                                 collate_fn=custom_collate, \
-                                 num_workers=4, pin_memory=True)
-        test_dataloader = DataLoader(test_dataset, batch_size=16, sampler=DistributedSampler(test_dataset, shuffle=True, drop_last=True),   
-                                 collate_fn=custom_collate, \
-                                 num_workers=4, pin_memory=True)  
+        train_dataloader = DataLoader(train_dataset, batch_size=8, sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=True),\
+                                 collate_fn=custom_collate, drop_last=True, \
+                                 num_workers=4, pin_memory=False)
+        test_dataloader = DataLoader(test_dataset, batch_size=8, sampler=DistributedSampler(test_dataset, shuffle=True, drop_last=True),   
+                                 collate_fn=custom_collate, drop_last=True, \
+                                 num_workers=4, pin_memory=False)  
 
-
-    print(summary(model))
-    train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True,\
-                                 collate_fn=custom_collate, \
-                                 num_workers=4, pin_memory=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=16,shuffle=True,\
-                                 collate_fn=custom_collate, \
-                                 num_workers=4, pin_memory=True)
+    else:
+        train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True,\
+                                    collate_fn=custom_collate, \
+                                    num_workers=4, pin_memory=True)
+        test_dataloader = DataLoader(test_dataset, batch_size=16,shuffle=True,\
+                                    collate_fn=custom_collate, \
+                                    num_workers=4, pin_memory=True)
     
+    print(summary(model))
     optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
     train(model, device, train_dataloader, test_dataloader, optimizer, epochs = 5)
-
 
 
 #if __name__ == "__main ":
@@ -389,11 +392,5 @@ main()
 # - train with muse and test with iemocap
 # - Make in the interface a selector for these three different models and check which is the most useful 
 
-
-#trovare un modo per spezzare i gradienti
-
-#pipeline parallelism naive
-#torch.cuda.memory_allocated
-#change to float32
 
 #For execute it: CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 vocal_assistant/emotion/predict_emotion.py
