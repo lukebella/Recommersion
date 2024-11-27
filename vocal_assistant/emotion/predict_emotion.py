@@ -15,18 +15,19 @@ import torch.distributed as dist
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
     BackwardPrefetch,
-    CPUOffload
 )
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     ShardingStrategy,
 )
 
-from transformers.models.gpt_bigcode.modeling_gpt_bigcode import GPTBigCodeBlock
+from torch.distributed.fsdp.wrap import (
+    size_based_auto_wrap_policy,
+)
 
 from torch.distributed import init_process_group, all_reduce
 from torchinfo import summary
 import datetime
-
+import functools
 
 # Initialize Distributed Process Group for FSDP
 def initialize_distributed():   
@@ -35,16 +36,14 @@ def initialize_distributed():
     world_size = int(os.environ.get("WORLD_SIZE", "2"))
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = "29500"
-    os.environ["WORLD_SIZE"] = str(world_size)
-    os.environ["RANK"] = str(rank)
-
-    #torch.cuda.set_device(local_rank)
+    
+    torch.cuda.set_device(local_rank)
     init_process_group(backend="nccl", rank=rank, world_size=world_size, timeout=datetime.timedelta(seconds=60))
     
 
-def requires_grad_policy(module, recurse, *args, **kwargs):
-    """Wrap only modules that have trainable parameters."""
-    return any(p.requires_grad for p in module.parameters())
+"""def requires_grad_policy(module, recurse, *args, **kwargs):
+    # Wrap only modules that have trainable parameters.
+    return any(p.requires_grad for p in module.parameters())"""
 
 class EmotionDataset(Dataset):
     def __init__(self, df, processor):
@@ -98,8 +97,8 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
 
         self.config = config
         self.wav2vec2 = Wav2Vec2Model(config)
-        for param in self.wav2vec2.parameters():
-            param.requires_grad = False
+        """for param in self.wav2vec2.parameters():
+            param.requires_grad = False"""
         self.classifier = RegressionHead(config)
         self.init_weights()
 
@@ -180,7 +179,7 @@ def compute_loss(model, device, batch, alpha, beta):
     input_values, attention_mask, labels = batch_values(batch, device)
     
     #TODO Resolve this issue
-    if torch.any(torch.eq(labels,0)) or (labels[:, 0].var() == 0 or labels[:, 1].var() == 0):
+    if (labels[:, 0].var() == 0 or labels[:, 1].var() == 0):
         print("Value equal to 0 or invariance in labels!")
         return None
 
@@ -198,14 +197,11 @@ def compute_loss(model, device, batch, alpha, beta):
 
     return loss
 
-def train_cpu(model, train_dataloader, test_dataloader, optimizer, epochs, alpha, beta):
+def train_cpu(model, checkpoint_path, train_dataloader, test_dataloader, optimizer, epochs, alpha, beta):
     """
     Train the model using CCC loss for valence and arousal.
     """
     #TODO try to refactor with Accelerate (HuggingFace)
-    model.train()
-    checkpoint_path = "model_checkpoint_sampled.pth"
-    print("****TRAINING****")
     for epoch in range(epochs):
         epoch_loss = 0
 
@@ -232,15 +228,11 @@ def train_cpu(model, train_dataloader, test_dataloader, optimizer, epochs, alpha
         validate(model, test_dataloader, alpha, beta)
         #TODO undersand why in the last step there is a mismatch between batch and input
 
-def train_gpu(model, train_dataloader, test_dataloader, optimizer, epochs, alpha, beta):
+def train_gpu(model, checkpoint_path, train_dataloader, test_dataloader, optimizer, epochs, alpha, beta):
     """
     Train the model using CCC loss for valence and arousal.
     """
     #TODO try to refactor with Accelerate (HuggingFace)
-    dist.barrier()
-    model.train()
-    checkpoint_path = "model_checkpoint_sampled.pth"
-    print("****TRAINING****")
     for epoch in range(epochs):
         epoch_loss = 0
 
@@ -252,19 +244,25 @@ def train_gpu(model, train_dataloader, test_dataloader, optimizer, epochs, alpha
 
             # Backpropagation
             print("before backpropagation")
+            print("\tAllocated:", torch.cuda.memory_allocated(), "Reserved:", torch.cuda.memory_reserved())
+            dist.barrier()
+            loss_tensor = loss.clone()
+            
+            print("Loss Tensor:",loss_tensor)
+            loss_dis = distributed_loss(loss_tensor, float(dist.get_world_size())).item()
+            print("reduction loss:", loss_dis)
+        
+            epoch_loss += loss_dis
+
+            dist.barrier()
+
             loss.backward()
             print("after backpropagation")
+            print("\tAllocated:", torch.cuda.memory_allocated(), "Reserved:", torch.cuda.memory_reserved())
 
             optimizer.step()
             #loss = loss.detach()
-            dist.barrier()
             # avg loss over all processes
-            """loss_tensor = loss.clone().detach()
-            print("Loss Tensor:",loss_tensor)
-            loss = distributed_loss(loss_tensor, float(dist.get_world_size())).item()
-            print("reduction loss:", loss)"""
-            epoch_loss += loss
-            print("Allocated:", torch.cuda.memory_allocated(), "Reserved:", torch.cuda.memory_reserved())
 
 
         print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {epoch_loss / len(train_dataloader)}")
@@ -274,10 +272,14 @@ def train_gpu(model, train_dataloader, test_dataloader, optimizer, epochs, alpha
         validate(model, test_dataloader, alpha, beta)
         #TODO undersand why in the last step there is a mismatch between batch and input
 
+
 def train(model, device, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0.5, beta=0.5):
+    model.train()
+    checkpoint_path = "model_checkpoint_sampled.pth"
+    print("****TRAINING****")
     if device == 'cpu':
-        train_cpu(model, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0.5, beta=0.5)
-    else: train_gpu(model, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0.5, beta=0.5)
+        train_cpu(model, checkpoint_path, train_dataloader, test_dataloader, optimizer, epochs, alpha, beta)
+    else: train_gpu(model, checkpoint_path, train_dataloader, test_dataloader, optimizer, epochs, alpha, beta)
 
 
 # Validation Loop
@@ -325,45 +327,48 @@ def predict_emotion(model, device, processor, wav_data):
 
 
 def main():
-    if return_device().type.startswith('cuda'):
+    device = return_device()
+    if device.type.startswith('cuda'):
         initialize_distributed()
-
-    device = 'cpu' #return_device()
-    pretrained_model = "facebook/wav2vec2-base"
+        
+    pretrained_model = "patrickvonplaten/wav2vec2_tiny_random_robust" #"facebook/wav2vec2-base"
     processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
     config.num_labels = 2  # Ensure this matches the number of regression outputs (Valence, Arousal)  
     model = EmotionModel(config).to(device)
     model.gradient_checkpointing_enable()
 
-    df = pd.read_pickle("data/full_data").sample(frac=0.5, random_state=42)\
+    df = pd.read_pickle("data/full_data").sample(frac=1, random_state=42)\
            .reset_index(drop=True)
     print(df.head())
 
-    train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
+    train_df, test_df = train_test_split(df, test_size=0.25, random_state=42)
 
     train_dataset = EmotionDataset(train_df, processor)
     test_dataset = EmotionDataset(test_df, processor)
 
 
     if device!='cpu':
-        model = FSDP(model, auto_wrap_policy=requires_grad_policy, use_orig_params=True, sync_module_states=True,\
+        my_auto_wrap_policy = functools.partial(
+            size_based_auto_wrap_policy, min_num_params=100
+        )
+        model = FSDP(model, auto_wrap_policy=my_auto_wrap_policy, use_orig_params=True, sync_module_states=True,\
                  sharding_strategy=ShardingStrategy.FULL_SHARD, backward_prefetch=BackwardPrefetch.BACKWARD_PRE)
                  #,cpu_offload=CPUOffload(offload_params=True))
         
-        train_dataloader = DataLoader(train_dataset, batch_size=2, sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=True),\
+        train_dataloader = DataLoader(train_dataset, batch_size=16, sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=True),\
                                  collate_fn=custom_collate, \
                                  num_workers=4, pin_memory=True)
-        test_dataloader = DataLoader(test_dataset, batch_size=2, sampler=DistributedSampler(test_dataset, shuffle=True, drop_last=True),   
+        test_dataloader = DataLoader(test_dataset, batch_size=16, sampler=DistributedSampler(test_dataset, shuffle=True, drop_last=True),   
                                  collate_fn=custom_collate, \
                                  num_workers=4, pin_memory=True)  
 
 
     print(summary(model))
-    train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=True,\
+    train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True,\
                                  collate_fn=custom_collate, \
                                  num_workers=4, pin_memory=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=2,shuffle=True,\
+    test_dataloader = DataLoader(test_dataset, batch_size=16,shuffle=True,\
                                  collate_fn=custom_collate, \
                                  num_workers=4, pin_memory=True)
     
