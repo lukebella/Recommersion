@@ -38,7 +38,7 @@ def initialize_distributed():
     os.environ["WORLD_SIZE"] = str(world_size)
     os.environ["RANK"] = str(rank)
 
-    torch.cuda.set_device(local_rank)
+    #torch.cuda.set_device(local_rank)
     init_process_group(backend="nccl", rank=rank, world_size=world_size, timeout=datetime.timedelta(seconds=60))
     
 
@@ -325,7 +325,8 @@ def predict_emotion(model, device, processor, wav_data):
 
 
 def main():
-    initialize_distributed()
+    if return_device().type.startswith('cuda'):
+        initialize_distributed()
 
     device = 'cpu' #return_device()
     pretrained_model = "facebook/wav2vec2-base"
@@ -335,11 +336,11 @@ def main():
     model = EmotionModel(config).to(device)
     model.gradient_checkpointing_enable()
 
-    df = pd.read_pickle("data/full_data")
-    df_sampled = df.sample(frac=0.5, random_state=42).reset_index(drop=True)
-    print(df_sampled.head())
+    df = pd.read_pickle("data/full_data").sample(frac=0.5, random_state=42)\
+           .reset_index(drop=True)
+    print(df.head())
 
-    train_df, test_df = train_test_split(df_sampled, test_size=0.2, random_state=42)
+    train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
 
     train_dataset = EmotionDataset(train_df, processor)
     test_dataset = EmotionDataset(test_df, processor)
