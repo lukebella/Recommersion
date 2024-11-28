@@ -323,7 +323,7 @@ def validate(model, device, test_dataloader, alpha, beta):
     print(f"Validation Loss: {avg_val_loss}")
     return avg_val_loss
 
-def plot_losses(train_losses, val_losses, filename = "./loss_plot.png"):
+def plot_losses(train_losses, val_losses, filename = "./loss_plot_1.png"):
     plt.figure(figsize=(10, 6))
     plt.plot(range(1, len(train_losses) + 1), train_losses, label='Training Loss', marker='o')
     plt.plot(range(1, len(val_losses) + 1), val_losses, label='Validation Loss', marker='o')

@@ -11,6 +11,8 @@ __pycache__
 model_checkpoint_sampled.pth
 interface.py
 .stfolder
+.stignore
 *.wav
 .vscode
 parallelism.py
+*.png
