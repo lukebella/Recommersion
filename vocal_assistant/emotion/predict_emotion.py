@@ -29,6 +29,7 @@ from torch.distributed import init_process_group, all_reduce
 from torchinfo import summary
 import datetime
 import functools
+import matplotlib.pyplot as plt
 
 
 
@@ -75,18 +76,20 @@ class RegressionHead(nn.Module):
 
         super().__init__()
 
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
-        #self.dropout = nn.Dropout(config.final_dropout)
-        self.out_proj = nn.Linear(config.hidden_size, config.num_labels)
+        #self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.rnn = nn.LSTM(input_size= config.hidden_size, hidden_size=config.hidden_size, num_layers=2, \
+                           batch_first=True, bidirectional=True)        
+        self.dropout = nn.Dropout(config.final_dropout)
+        self.dense = nn.Linear(config.hidden_size * 2, config.num_labels)
 
     def forward(self, features, **kwargs):
 
         x = features
         #x = self.dropout(x)
-        #x = self.dense(x)
+        x,_ = self.rnn(x)
         x = torch.tanh(x)        
         #x = self.dropout(x)
-        x = self.out_proj(x)
+        x = self.dense(x)
 
         return x
 
@@ -188,8 +191,8 @@ def compute_loss(model, device, batch, alpha, beta):
         return None
 
     _, logits = model(input_values=input_values, attention_mask=attention_mask)
-    print("logits:", logits)
-    print("labels:", labels)
+    #print("logits:", logits)
+    #print("labels:", labels)
     
     # Compute CCC Loss for valence and arousal
     loss_val = ccc_loss(labels[:, 0], logits[:, 0]).mean()
@@ -206,7 +209,11 @@ def train_cpu(model, checkpoint_path, train_dataloader, test_dataloader, optimiz
     Train the model using CCC loss for valence and arousal.
     """
     #TODO try to refactor with Accelerate (HuggingFace)
+
+    train_losses = []
+    val_losses = []
     for epoch in range(epochs):
+        model.train()
         epoch_loss = 0
 
         # Training Loop
@@ -237,11 +244,16 @@ def train_gpu(model, checkpoint_path, train_dataloader, test_dataloader, optimiz
     Train the model using CCC loss for valence and arousal.
     """
     #TODO try to refactor with Accelerate (HuggingFace)
+    train_losses = []
+    val_losses = []
+
     for epoch in range(epochs):
+        model.train()
         epoch_loss = 0
         train_dataloader.sampler.set_epoch(epoch)
         # Training Loop
         for batch in tqdm(train_dataloader):
+
             optimizer.zero_grad()
             loss = compute_loss(model, 'cuda', batch, alpha, beta)
             if loss is None: continue 
@@ -265,23 +277,27 @@ def train_gpu(model, checkpoint_path, train_dataloader, test_dataloader, optimiz
             # print("\tMemory reserved:", torch.cuda.memory_reserved() / 1e9, "GB")
 
             optimizer.step()
-            loss = loss.detach()
+            loss = loss.item()
             # avg loss over all processes
             epoch_loss += loss
 
-        print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {epoch_loss / len(train_dataloader)}")
+        avg_epoch_loss = epoch_loss / len(train_dataloader)
+        train_losses.append(avg_epoch_loss)
+
+        print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {avg_epoch_loss}")
+
         dist.barrier()
         #if dist.get_rank()==0:
         save_checkpoint(model, optimizer, epoch, checkpoint_path)
         dist.barrier()
 
         # Validation Loop
-        validate(model, 'cuda', test_dataloader, alpha, beta)
+        val_loss = validate(model, 'cuda', test_dataloader, alpha, beta)
+        val_losses.append(val_loss)
         #TODO undersand why in the last step there is a mismatch between batch and input
-
+    plot_losses(train_losses, val_losses)
 
 def train(model, device, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0.5, beta=0.5):
-    model.train()
     checkpoint_path = "model_checkpoint_sampled.pth"
     print("****TRAINING****")
     if device == 'cpu':
@@ -292,6 +308,7 @@ def train(model, device, train_dataloader, test_dataloader, optimizer, epochs=3,
 # Validation Loop
 def validate(model, device, test_dataloader, alpha, beta):
     model.eval()
+    avg_val_loss = 0
     val_loss = 0
     print("****VALIDATION****")
     with torch.no_grad():
@@ -302,7 +319,22 @@ def validate(model, device, test_dataloader, alpha, beta):
             val_loss += loss.item()
 
     # Average CCC scores
-    print(f"Validation Loss: {val_loss / len(test_dataloader)}")
+    avg_val_loss = val_loss / len(test_dataloader)
+    print(f"Validation Loss: {avg_val_loss}")
+    return avg_val_loss
+
+def plot_losses(train_losses, val_losses, filename = "./loss_plot.png"):
+    plt.figure(figsize=(10, 6))
+    plt.plot(range(1, len(train_losses) + 1), train_losses, label='Training Loss', marker='o')
+    plt.plot(range(1, len(val_losses) + 1), val_losses, label='Validation Loss', marker='o')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Training and Validation Loss Over Epochs')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+    plt.savefig(filename)  # Save the plot to a file
+    print(f"Plot saved as {filename}")
 
 
 def load_trained_model(device, checkpoint_path, pretrained_model):
@@ -337,7 +369,7 @@ def main():
     if device.type.startswith('cuda'):
         initialize_distributed()
         
-    pretrained_model = "patrickvonplaten/wav2vec2_tiny_random_robust" #"facebook/wav2vec2-base"
+    pretrained_model =  "patrickvonplaten/wav2vec2_tiny_random_robust"
     processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
     model = EmotionModel(config).to(device)
@@ -360,10 +392,10 @@ def main():
                  sharding_strategy=ShardingStrategy.FULL_SHARD, backward_prefetch=BackwardPrefetch.BACKWARD_PRE
                  ,cpu_offload=CPUOffload(offload_params=True))
         
-        train_dataloader = DataLoader(train_dataset, batch_size=8, sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=True),\
+        train_dataloader = DataLoader(train_dataset, batch_size=16, sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=True),\
                                  collate_fn=custom_collate, drop_last=True, \
                                  num_workers=4, pin_memory=False)
-        test_dataloader = DataLoader(test_dataset, batch_size=8, sampler=DistributedSampler(test_dataset, shuffle=True, drop_last=True),   
+        test_dataloader = DataLoader(test_dataset, batch_size=16, sampler=DistributedSampler(test_dataset, shuffle=True, drop_last=True),   
                                  collate_fn=custom_collate, drop_last=True, \
                                  num_workers=4, pin_memory=False)  
 
@@ -377,7 +409,7 @@ def main():
     
     print(summary(model))
     optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
-    train(model, device, train_dataloader, test_dataloader, optimizer, epochs = 5)
+    train(model, device, train_dataloader, test_dataloader, optimizer, epochs = 50)
 
 
 #if __name__ == "__main ":
