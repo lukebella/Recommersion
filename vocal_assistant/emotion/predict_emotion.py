@@ -9,50 +9,14 @@ from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from torch.nn.utils.rnn import pad_sequence
 from torchinfo import summary
-
-from torch.utils.data.distributed import DistributedSampler
-import torch.distributed as dist
-from torch.distributed.fsdp import (
-    FullyShardedDataParallel as FSDP,
-    BackwardPrefetch,
-    CPUOffload
-)
-from torch.distributed.fsdp.fully_sharded_data_parallel import (
-    ShardingStrategy,
-)
-
-from torch.distributed.fsdp.wrap import (
-    size_based_auto_wrap_policy,
-)
-
-from torch.distributed import init_process_group, all_reduce
-from torchinfo import summary
-import datetime
-import functools
 import matplotlib.pyplot as plt
 
-
-
-# Initialize Distributed Process Group for FSDP
-def initialize_distributed():   
-    rank = int(os.environ.get("RANK", "0"))
-    local_rank = int(os.environ.get("LOCAL_RANK", rank))
-    world_size = int(os.environ.get("WORLD_SIZE", "2"))
-    os.environ["MASTER_ADDR"] = "127.0.0.1"
-    os.environ["MASTER_PORT"] = "29500"
-    
-    torch.cuda.set_device(local_rank)
-    init_process_group(backend="nccl", rank=rank, world_size=world_size, timeout=datetime.timedelta(seconds=60))
-    
-
-"""def requires_grad_policy(module, recurse, *args, **kwargs):
-    # Wrap only modules that have trainable parameters.
-    return any(p.requires_grad for p in module.parameters())"""
 
 class EmotionDataset(Dataset):
     def __init__(self, df, processor):
         self.df = df
         self.processor = processor
+        self.sample_rate = 16000
 
     def __len__(self):
         return len(self.df)
@@ -62,10 +26,10 @@ class EmotionDataset(Dataset):
         valence = self.df.iloc[idx]["Valence"]
         arousal = self.df.iloc[idx]["Arousal"]
         
+        wav_data = wav_data[:self.sample_rate*10]
         # Process audio input
-        inputs = self.processor(wav_data, sampling_rate=16000, return_tensors="pt", padding=True)
+        inputs = self.processor(wav_data, sampling_rate=self.sample_rate, return_tensors="pt", padding=True)
         inputs['labels'] = torch.tensor([valence, arousal], dtype=torch.float32)
-        
         return inputs
     
 
@@ -100,23 +64,32 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
     def __init__(self, config):
 
         super().__init__(config)
-
+        self.wav2vec2 = Wav2Vec2Model(self.config)
+        self.init_weights()
+        self.gradient_checkpointing_enable()
         self.config = config
-        self.wav2vec2 = Wav2Vec2Model(config)
         """for param in self.wav2vec2.parameters():
             param.requires_grad = False"""
         self.classifier = RegressionHead(config)
-        self.init_weights()
+        
+
 
     def forward(
             self,
             input_values,
             attention_mask
     ):
-
+        #print("INPUT_VALUES:",sys.getsizeof(input_values))
+        #print("SUMMARY:",torch.cuda.memory_summary())
         outputs = self.wav2vec2(input_values, attention_mask=attention_mask)
+        #print("OUTPUTS_VALUES:",sys.getsizeof(outputs))
+        #print("SUMMARY:",torch.cuda.memory_summary())
         hidden_states = outputs[0]
+        #print("hidden states:",sys.getsizeof(hidden_states))
+        #print("SUMMARY:",torch.cuda.memory_summary())
         hidden_states = torch.mean(hidden_states, dim=1)
+        #print("hidden states:",sys.getsizeof(hidden_states))
+        #print("SUMMARY:",torch.cuda.memory_summary())
         logits = self.classifier(hidden_states)
 
         return hidden_states, logits
@@ -124,7 +97,8 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
 
 def custom_collate(batch):
     input_values = [item['input_values'].squeeze(0) for item in batch]
-    attention_mask = [item['attention_mask'].squeeze(0) if 'attention_mask' in item else torch.ones_like(item['input_values'].squeeze(0)) for item in batch]
+    attention_mask = [item['attention_mask'].squeeze(0) if 'attention_mask' \
+                      in item else torch.ones_like(item['input_values'].squeeze(0)) for item in batch]
     labels = torch.stack([item['labels'] for item in batch])
 
     # Pad input values and attention mask to the longest in the batch
@@ -171,8 +145,6 @@ def ccc_loss(gold, pred):
     ccc_loss = 1 - ccc(gold, pred)
     return ccc_loss
 
-def distributed_loss(tensor, world):
-    return all_reduce(tensor, op=dist.ReduceOp.SUM) / world
 
 def batch_values(batch, device):
     input_values = batch['input_values'].to(device)
@@ -182,21 +154,21 @@ def batch_values(batch, device):
     return input_values, attention_mask, labels
 
 
+
 def compute_loss(model, device, batch, alpha, beta):
     input_values, attention_mask, labels = batch_values(batch, device)
-    
+   
     #TODO Resolve this issue
     if (labels[:, 0].var() == 0 or labels[:, 1].var() == 0):
         print("Value equal to 0 or invariance in labels!")
         return None
 
     _, logits = model(input_values=input_values, attention_mask=attention_mask)
-    #print("logits:", logits)
-    #print("labels:", labels)
+    
     
     # Compute CCC Loss for valence and arousal
-    loss_val = ccc_loss(labels[:, 0], logits[:, 0]).mean()
-    loss_ar = ccc_loss(labels[:, 1], logits[:, 1]).mean()
+    loss_val = ccc_loss(labels[:, 0], logits[:, 0])
+    loss_ar = ccc_loss(labels[:, 1], logits[:, 1])
 
     # Weighted total loss
     loss = alpha * loss_val + beta * loss_ar
@@ -204,78 +176,32 @@ def compute_loss(model, device, batch, alpha, beta):
 
     return loss
 
-def train_cpu(model, checkpoint_path, train_dataloader, test_dataloader, optimizer, epochs, alpha, beta):
+
+
+def train(model, device, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0.5, beta=0.5, checkpoint_path = "model_checkpoint_sampled.pth",):
     """
     Train the model using CCC loss for valence and arousal.
     """
     #TODO try to refactor with Accelerate (HuggingFace)
-
-    train_losses = []
-    val_losses = []
-    for epoch in range(epochs):
-        model.train()
-        epoch_loss = 0
-
-        # Training Loop
-        for batch in tqdm(train_dataloader):
-            optimizer.zero_grad()
-            loss = compute_loss(model, 'cpu', batch, alpha, beta)
-            if loss is None: continue 
-
-            # Backpropagation
-            #print("before backpropagation")
-            loss.backward()
-            #print("after backpropagation")
-
-            optimizer.step()
-            loss = loss.detach()
-            # avg loss over all processes
-            epoch_loss += loss
-
-        print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {epoch_loss / len(train_dataloader)}")
-        save_checkpoint(model, optimizer, epoch, checkpoint_path)
-
-        # Validation Loop
-        validate(model, 'cpu', test_dataloader, alpha, beta)
-        #TODO undersand why in the last step there is a mismatch between batch and input
-
-def train_gpu(model, checkpoint_path, train_dataloader, test_dataloader, optimizer, epochs, alpha, beta):
-    """
-    Train the model using CCC loss for valence and arousal.
-    """
-    #TODO try to refactor with Accelerate (HuggingFace)
+    print("****TRAINING****")
     train_losses = []
     val_losses = []
 
     for epoch in range(epochs):
         model.train()
         epoch_loss = 0
-        train_dataloader.sampler.set_epoch(epoch)
+
         # Training Loop
         for batch in tqdm(train_dataloader):
 
             optimizer.zero_grad()
-            loss = compute_loss(model, 'cuda', batch, alpha, beta)
+           
+            loss = compute_loss(model, device, batch, alpha, beta)
             if loss is None: continue 
 
             # Backpropagation
-            #print("before backpropagation")
-            # print("\tMemory allocated:", torch.cuda.memory_allocated() / 1e9, "GB")
-            # print("\tMemory reserved:", torch.cuda.memory_reserved() / 1e9, "GB")
-
-            dist.barrier()
-            """loss_tensor = loss.clone()
-
-            print("Loss Tensor:",loss_tensor)
-            loss_dis = distributed_loss(loss_tensor, float(dist.get_world_size())).item()
-            print("reduction loss:", loss_dis)
-            dist.barrier()"""
-
             loss.backward()
-            # print("after backpropagation")
-            # print("\tMemory allocated:", torch.cuda.memory_allocated() / 1e9, "GB")
-            # print("\tMemory reserved:", torch.cuda.memory_reserved() / 1e9, "GB")
-
+        
             optimizer.step()
             loss = loss.item()
             # avg loss over all processes
@@ -285,24 +211,14 @@ def train_gpu(model, checkpoint_path, train_dataloader, test_dataloader, optimiz
         train_losses.append(avg_epoch_loss)
 
         print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {avg_epoch_loss}")
-
-        dist.barrier()
-        #if dist.get_rank()==0:
         save_checkpoint(model, optimizer, epoch, checkpoint_path)
-        dist.barrier()
 
         # Validation Loop
-        val_loss = validate(model, 'cuda', test_dataloader, alpha, beta)
+        val_loss = validate(model, device, test_dataloader, alpha, beta)
         val_losses.append(val_loss)
+
         #TODO undersand why in the last step there is a mismatch between batch and input
     plot_losses(train_losses, val_losses)
-
-def train(model, device, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0.5, beta=0.5):
-    checkpoint_path = "model_checkpoint_sampled.pth"
-    print("****TRAINING****")
-    if device == 'cpu':
-        train_cpu(model, checkpoint_path, train_dataloader, test_dataloader, optimizer, epochs, alpha, beta)
-    else: train_gpu(model, checkpoint_path, train_dataloader, test_dataloader, optimizer, epochs, alpha, beta)
 
 
 # Validation Loop
@@ -322,6 +238,7 @@ def validate(model, device, test_dataloader, alpha, beta):
     avg_val_loss = val_loss / len(test_dataloader)
     print(f"Validation Loss: {avg_val_loss}")
     return avg_val_loss
+
 
 def plot_losses(train_losses, val_losses, filename = "./loss_plot_1.png"):
     plt.figure(figsize=(10, 6))
@@ -366,14 +283,11 @@ def predict_emotion(model, device, processor, wav_data):
 
 def main():
     device = return_device()
-    if device.type.startswith('cuda'):
-        initialize_distributed()
-        
-    pretrained_model =  "patrickvonplaten/wav2vec2_tiny_random_robust"
+    
+    pretrained_model = "facebook/wav2vec2-base"    #patrickvonplaten/wav2vec2_tiny_random_robust" #
     processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
     model = EmotionModel(config).to(device)
-    model.gradient_checkpointing_enable()
 
     df = pd.read_pickle("data/full_data").sample(frac=1, random_state=42).reset_index(drop=True)
     print(df.head())
@@ -383,37 +297,21 @@ def main():
     train_dataset = EmotionDataset(train_df, processor)
     test_dataset = EmotionDataset(test_df, processor)
 
+    train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True,\
+                                collate_fn=custom_collate, \
+                                num_workers=4, pin_memory=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=16,shuffle=True,\
+                                collate_fn=custom_collate, \
+                                num_workers=4, pin_memory=True)
 
-    if device!='cpu':
-        my_auto_wrap_policy = functools.partial(
-            size_based_auto_wrap_policy, min_num_params=100
-        )
-        model = FSDP(model, auto_wrap_policy=my_auto_wrap_policy, use_orig_params=True, sync_module_states=True,\
-                 sharding_strategy=ShardingStrategy.FULL_SHARD, backward_prefetch=BackwardPrefetch.BACKWARD_PRE
-                 ,cpu_offload=CPUOffload(offload_params=True))
-        
-        train_dataloader = DataLoader(train_dataset, batch_size=16, sampler=DistributedSampler(train_dataset, shuffle=True, drop_last=True),\
-                                 collate_fn=custom_collate, drop_last=True, \
-                                 num_workers=4, pin_memory=False)
-        test_dataloader = DataLoader(test_dataset, batch_size=16, sampler=DistributedSampler(test_dataset, shuffle=True, drop_last=True),   
-                                 collate_fn=custom_collate, drop_last=True, \
-                                 num_workers=4, pin_memory=False)  
-
-    else:
-        train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True,\
-                                    collate_fn=custom_collate, \
-                                    num_workers=4, pin_memory=True)
-        test_dataloader = DataLoader(test_dataset, batch_size=16,shuffle=True,\
-                                    collate_fn=custom_collate, \
-                                    num_workers=4, pin_memory=True)
-    
-    print(summary(model))
+    summary(model)
     optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
-    train(model, device, train_dataloader, test_dataloader, optimizer, epochs = 50)
+
+    train(model, device, train_dataloader, test_dataloader, optimizer, epochs = 20)
 
 
-#if __name__ == "__main ":
-main()
+if __name__ == "__main__":
+    main()
 
 
 
