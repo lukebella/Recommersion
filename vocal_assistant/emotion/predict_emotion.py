@@ -10,6 +10,8 @@ from sklearn.model_selection import train_test_split
 from torch.nn.utils.rnn import pad_sequence
 from torchinfo import summary
 import matplotlib.pyplot as plt
+import numpy as np
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 
 class EmotionDataset(Dataset):
@@ -20,14 +22,26 @@ class EmotionDataset(Dataset):
 
     def __len__(self):
         return len(self.df)
+    
+    def __normalize_waveform(self, wav_data):
+        return (wav_data - np.mean(wav_data)) / (np.std(wav_data) + 1e-7)
+
 
     def __getitem__(self, idx):
         wav_data = self.df.iloc[idx]["wav_file"]  
         valence = self.df.iloc[idx]["Valence"]
         arousal = self.df.iloc[idx]["Arousal"]
         
-        wav_data = wav_data[:self.sample_rate*10]
-        # Process audio input
+        max_length = self.sample_rate * 10
+    
+        # Truncate or pad
+        if len(wav_data) > max_length:
+            wav_data = wav_data[:max_length]
+        else:
+            padding = max_length - len(wav_data)
+            wav_data = np.pad(wav_data, (0, padding), 'constant')
+        
+        wav_data = self.__normalize_waveform(wav_data)
         inputs = self.processor(wav_data, sampling_rate=self.sample_rate, return_tensors="pt", padding=True)
         inputs['labels'] = torch.tensor([valence, arousal], dtype=torch.float32)
         return inputs
@@ -39,21 +53,21 @@ class RegressionHead(nn.Module):
     def __init__(self, config):
 
         super().__init__()
-
-        #self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
         self.rnn = nn.LSTM(input_size= config.hidden_size, hidden_size=config.hidden_size, num_layers=2, \
-                           batch_first=True, bidirectional=True)        
+                           batch_first=True, bidirectional=False)        
         self.dropout = nn.Dropout(config.final_dropout)
-        self.dense = nn.Linear(config.hidden_size * 2, config.num_labels)
+        self.output = nn.Linear(config.hidden_size , config.num_labels)
 
     def forward(self, features, **kwargs):
 
         x = features
-        #x = self.dropout(x)
-        x,_ = self.rnn(x)
-        x = torch.tanh(x)        
-        #x = self.dropout(x)
+        x = self.dropout(x)
         x = self.dense(x)
+        x = torch.relu(x)        
+        x = self.dropout(x)
+        x = self.output(x)
 
         return x
 
@@ -65,11 +79,17 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
 
         super().__init__(config)
         self.wav2vec2 = Wav2Vec2Model(self.config)
-        self.init_weights()
+        #self.init_weights()
         self.gradient_checkpointing_enable()
         self.config = config
-        """for param in self.wav2vec2.parameters():
-            param.requires_grad = False"""
+
+        for param in self.wav2vec2.feature_extractor.parameters():
+            param.requires_grad = False
+        
+        # Allow fine-tuning of transformer layers
+        for param in self.wav2vec2.encoder.parameters():
+            param.requires_grad = True
+
         self.classifier = RegressionHead(config)
         
 
@@ -79,17 +99,12 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
             input_values,
             attention_mask
     ):
-        #print("INPUT_VALUES:",sys.getsizeof(input_values))
-        #print("SUMMARY:",torch.cuda.memory_summary())
+        
         outputs = self.wav2vec2(input_values, attention_mask=attention_mask)
-        #print("OUTPUTS_VALUES:",sys.getsizeof(outputs))
-        #print("SUMMARY:",torch.cuda.memory_summary())
-        hidden_states = outputs[0]
-        #print("hidden states:",sys.getsizeof(hidden_states))
-        #print("SUMMARY:",torch.cuda.memory_summary())
+        hidden_states = outputs.last_hidden_state
+        
         hidden_states = torch.mean(hidden_states, dim=1)
-        #print("hidden states:",sys.getsizeof(hidden_states))
-        #print("SUMMARY:",torch.cuda.memory_summary())
+        
         logits = self.classifier(hidden_states)
 
         return hidden_states, logits
@@ -125,13 +140,15 @@ def save_checkpoint(model, optimizer, epoch, filename):
 def return_device():
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Dynamically set device
 
+
 def ccc(gold, pred):
-    gold = gold.squeeze(-1)
+    
+    #gold = gold.squeeze(-1)
     pred = pred.squeeze(-1)
     
-    gold_mean = torch.mean(gold, dim=-1, keepdim=True)
-    pred_mean = torch.mean(pred, dim=-1, keepdim=True)
-    
+    gold_mean = torch.mean(gold, dim =0, keepdim=True)
+    pred_mean = torch.mean(pred, dim=0, keepdim=True)
+
     covariance = torch.mean((gold - gold_mean) * (pred - pred_mean), dim=-1, keepdim=True)
     gold_var = torch.mean((gold - gold_mean) ** 2, dim=-1, keepdim=True)
     pred_var = torch.mean((pred - pred_mean) ** 2, dim=-1, keepdim=True)
@@ -140,6 +157,7 @@ def ccc(gold, pred):
     
     ccc = (2 * covariance) / (gold_var + pred_var + (gold_mean - pred_mean) ** 2 + 1e-7)
     return ccc
+
 
 def ccc_loss(gold, pred):
     ccc_loss = 1 - ccc(gold, pred)
@@ -165,7 +183,6 @@ def compute_loss(model, device, batch, alpha, beta):
 
     _, logits = model(input_values=input_values, attention_mask=attention_mask)
     
-    
     # Compute CCC Loss for valence and arousal
     loss_val = ccc_loss(labels[:, 0], logits[:, 0])
     loss_ar = ccc_loss(labels[:, 1], logits[:, 1])
@@ -178,7 +195,7 @@ def compute_loss(model, device, batch, alpha, beta):
 
 
 
-def train(model, device, train_dataloader, test_dataloader, optimizer, epochs=3, alpha=0.5, beta=0.5, checkpoint_path = "model_checkpoint_sampled.pth",):
+def train(model, device, train_dataloader, test_dataloader, optimizer, scheduler, epochs=3, alpha=0.5, beta=0.5, checkpoint_path = "model_checkpoint_sampled.pth",):
     """
     Train the model using CCC loss for valence and arousal.
     """
@@ -217,7 +234,8 @@ def train(model, device, train_dataloader, test_dataloader, optimizer, epochs=3,
         val_loss = validate(model, device, test_dataloader, alpha, beta)
         val_losses.append(val_loss)
 
-        #TODO undersand why in the last step there is a mismatch between batch and input
+        scheduler.step(val_loss)
+
     plot_losses(train_losses, val_losses)
 
 
@@ -231,7 +249,7 @@ def validate(model, device, test_dataloader, alpha, beta):
         for batch in tqdm(test_dataloader):
             loss = compute_loss(model, device, batch, alpha, beta)
             if loss is None: continue
-            print(loss)
+
             val_loss += loss.item()
 
     # Average CCC scores
@@ -289,7 +307,7 @@ def main():
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
     model = EmotionModel(config).to(device)
 
-    df = pd.read_pickle("data/full_data").sample(frac=1, random_state=42).reset_index(drop=True)
+    df = pd.read_pickle("data/MuSe_useful").sample(frac=1, random_state=42).reset_index(drop=True)
     print(df.head())
 
     train_df, test_df = train_test_split(df, test_size=0.25, random_state=42)
@@ -306,8 +324,8 @@ def main():
 
     summary(model)
     optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
-
-    train(model, device, train_dataloader, test_dataloader, optimizer, epochs = 20)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.5, verbose=True)
+    train(model, device, train_dataloader, test_dataloader, optimizer, scheduler, epochs = 50)
 
 
 if __name__ == "__main__":
