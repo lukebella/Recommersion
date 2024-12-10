@@ -10,7 +10,7 @@ from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from torchinfo import summary
 import matplotlib.pyplot as plt
-
+from torchmetrics.regression import ConcordanceCorrCoef
 
 class EmotionDataset(Dataset):
     def __init__(self, df, processor):
@@ -115,7 +115,9 @@ def ccc(gold, pred):
 
 
 def ccc_loss(gold, pred):
-    ccc_loss = 1 - ccc(gold, pred)
+    #ccc_loss = 1 - ccc(gold, pred)
+    ccc = ConcordanceCorrCoef().to("cuda")
+    ccc_loss = 1 - ccc(pred, gold)
     return ccc_loss
 
 
