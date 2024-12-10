@@ -5,11 +5,11 @@ import pandas as pd
 from transformers import Wav2Vec2Model, Wav2Vec2Processor, Wav2Vec2PreTrainedModel, Wav2Vec2Config
 import torch.nn as nn
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from torchinfo import summary
 import matplotlib.pyplot as plt
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 
 class EmotionDataset(Dataset):
@@ -27,35 +27,15 @@ class EmotionDataset(Dataset):
         valence = self.df.iloc[idx]["Valence"]
         arousal = self.df.iloc[idx]["Arousal"]
         
-        max_length = self.sample_rate * 11
-       
+        max_length = self.sample_rate * 10
+
         inputs = self.processor(wav_data, sampling_rate=self.sample_rate, return_tensors="pt", padding = 'max_length', \
-                                 truncation = True, max_length= max_length, do_normalize = True)
+                                 truncation = True, max_length = max_length, do_normalize = True)
+        
         inputs['input_values'] = inputs['input_values'].squeeze(0)
         inputs['labels'] = torch.tensor([valence, arousal], dtype=torch.float32)
         return inputs
     
-
-class RegressionHead(nn.Module):
-    r"""Classification head."""
-
-    def __init__(self, config):
-
-        super().__init__()
-        
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size)    
-        self.dropout = nn.Dropout(config.final_dropout)
-        self.output = nn.Linear(config.hidden_size , config.num_labels)
-
-    def forward(self, features, **kwargs):
-
-        x = features
-        #x = self.dropout(x)
-        x = self.dense(x)
-        x = torch.relu(x)        
-        x = self.dropout(x)
-
-        return self.output(x)
 
 
 class EmotionModel(Wav2Vec2PreTrainedModel):
@@ -64,10 +44,11 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
     def __init__(self, config):
 
         super().__init__(config)
-        self.wav2vec2 = Wav2Vec2Model(self.config)
-        self.init_weights()
-        self.gradient_checkpointing_enable()
         self.config = config
+        self.wav2vec2 = Wav2Vec2Model(self.config)
+        
+        #self.gradient_checkpointing_enable()
+        
         """for param in self.wav2vec2.feature_extractor.parameters():
             param.requires_grad = False
         
@@ -75,8 +56,13 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         for param in self.wav2vec2.encoder.parameters():
             param.requires_grad = True"""
 
-        self.classifier = RegressionHead(config)
-
+        self.regressor = nn.Sequential(
+            nn.Linear(self.wav2vec2.config.hidden_size, 32),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(32, 2)  # Valence and Arousal
+        )
+        self.init_weights()
 
     def forward(
             self,
@@ -85,13 +71,14 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
     ):
         
         outputs = self.wav2vec2(input_values)#, attention_mask=attention_mask)
-        hidden_states = outputs.last_hidden_state
+        hidden_states = outputs[0]
         
         hidden_states = torch.mean(hidden_states, dim=1)
         
-        logits = self.classifier(hidden_states)
+        logits = self.regressor(hidden_states)
 
         return hidden_states, logits
+
 
 
 def save_checkpoint(model, optimizer, epoch, filename):
@@ -114,12 +101,12 @@ def ccc(gold, pred):
     #gold = gold.squeeze(-1)
     pred = pred.squeeze(-1)
     
-    gold_mean = torch.mean(gold, dim =0, keepdim=True)
-    pred_mean = torch.mean(pred, dim=0, keepdim=True)
+    gold_mean = torch.mean(gold, dim = 0, keepdim=True)
+    pred_mean = torch.mean(pred, dim = 0, keepdim=True)
 
-    covariance = torch.mean((gold - gold_mean) * (pred - pred_mean), dim=-1, keepdim=True)
-    gold_var = torch.mean((gold - gold_mean) ** 2, dim=-1, keepdim=True)
-    pred_var = torch.mean((pred - pred_mean) ** 2, dim=-1, keepdim=True)
+    covariance = torch.mean((gold - gold_mean) * (pred - pred_mean), dim=0)
+    gold_var = torch.mean((gold - gold_mean) ** 2, dim=0)
+    pred_var = torch.mean((pred - pred_mean) ** 2, dim=0)
 
     #pearson_coefficient = covariance/(torch.sqrt(gold_var) * torch.sqrt(pred_var))
     
@@ -143,7 +130,7 @@ def batch_values(batch, device):
 
 def compute_loss(model, device, batch, alpha, beta):
     input_values, labels = batch_values(batch, device)
-   
+
     #TODO Resolve this issue
     if labels[:, 0].std() < 1e-7 or labels[:, 1].std() < 1e-7:
         print("Value equal to 0 or invariance in labels!")
@@ -151,10 +138,15 @@ def compute_loss(model, device, batch, alpha, beta):
 
     _, logits = model(input_values=input_values)#, attention_mask=attention_mask)
     # Example in validation loop
-    print("Predictions:", logits[:5].detach().cpu().numpy())
-    print("True labels:", labels[:5].detach().cpu().numpy())
+    print("Predictions:", logits[:4].detach().cpu().numpy())
+    print("True labels:", labels[:4].detach().cpu().numpy())
 
     # Compute CCC Loss for valence and arousal
+    """def mse(gold, pred):
+        return torch.mean((gold-pred)**2)
+    loss_val = mse(labels[:, 0], logits[:, 0])
+    loss_ar = mse(labels[:, 1], logits[:, 1])"""
+
     loss_val = ccc_loss(labels[:, 0], logits[:, 0])
     loss_ar = ccc_loss(labels[:, 1], logits[:, 1])
 
@@ -289,7 +281,7 @@ def predict_emotion(model, device, processor, wav_data):
 def main():
     device = return_device()
     
-    pretrained_model = "facebook/wav2vec2-base"    #patrickvonplaten/wav2vec2_tiny_random_robust" #
+    pretrained_model = "facebook/wav2vec2-base"    #patrickvonplaten/wav2vec2_tiny_random_robust" #w2v2-L-robust-12
     processor = Wav2Vec2Processor.from_pretrained(pretrained_model, attn_implementation="flash_attention_2")
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
     model = EmotionModel(config).to(device)
@@ -298,6 +290,9 @@ def main():
     df["Valence"] = df["Valence"].clip(0, 1)
     df["Arousal"] = df["Arousal"].clip(0, 1)
 
+    print(df["Valence"].describe())
+    print(df["Arousal"].describe())
+    
     print(df.head(10))
 
     train_df, test_df = train_test_split(df, test_size=0.25, random_state=42)
@@ -320,13 +315,9 @@ if __name__ == "__main__":
     main()
 
 
-
 #remember to do a scatterplot for valence and arousal like paper https://iopscience.iop.org/article/10.1088/1742-6596/1896/1/012004/pdf
 #when the user will test the model, try to:
 # - mix the two dataset for training (full_data)
 # - train with iemocap and test with muse
 # - train with muse and test with iemocap
 # - Make in the interface a selector for these three different models and check which is the most useful 
-
-
-#For execute it: CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 vocal_assistant/emotion/predict_emotion.py
