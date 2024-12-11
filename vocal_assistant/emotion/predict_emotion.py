@@ -298,10 +298,9 @@ def predict_emotion(model, device, processor, wav_data):
     model.eval()
     inputs = processor(wav_data, sampling_rate=16000, return_tensors="pt", padding=True)
     input_values = inputs['input_values'].to(device)
-    attention_mask = inputs.get('attention_mask').to(device) if 'attention_mask' in inputs else None
 
     with torch.no_grad():
-        outputs = model(input_values=input_values, attention_mask=attention_mask)
+        outputs = model(input_values=input_values)
     
     return outputs[1]
 

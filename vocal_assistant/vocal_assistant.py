@@ -14,7 +14,7 @@ class VocalAssistant:
             print("Detected SSH environment; skipping pyttsx3 initialization.")
             self.speak = None  # Skip pyttsx3 initialization
         else:
-            self.speak = pyttsx3.init(driverName='espeak')  # Initialize pyttsx3 for non-SSH
+            self.speak = pyttsx3.init()  # Initialize pyttsx3 for non-SSH
             self.voices = self.speak.getProperty('voices')  # Now we can access voices after initialization
             self.speak.setProperty('voice', self.voices[voice_type].id)  # Set the desired voice
 
@@ -42,7 +42,7 @@ class VocalAssistant:
             print(f"Error occurred: {e}")
         return command, wav_file
     
-    def process_audio_file(self, file_path: str) -> str:
+    def process_audio_file(self, file_path: str):
         # Initialize the recognizer
         command = ""
         audio = None
@@ -62,6 +62,12 @@ class VocalAssistant:
         except Exception as e:
             print(f"Error occurred: {e}")
         
+        return audio
+    
+    def process_audio_file(self, wav_file:bytes):
+        # Initialize the recognizer
+        command = ""
+        audio, _ = librosa.load(io.BytesIO(wav_file), sr=16000)
         return audio
     
         

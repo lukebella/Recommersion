@@ -11,3 +11,4 @@ torchmetrics>=1.5.1
 torchvision>=0.20.1
 tk>=0.1.0
 torchaudio>=2.5.1
+dask>=2024.12.0
