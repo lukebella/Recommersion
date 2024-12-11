@@ -15,4 +15,3 @@ interface.py
 *.wav
 .vscode
 parallelism.py
-*.png

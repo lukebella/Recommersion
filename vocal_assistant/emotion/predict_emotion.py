@@ -5,12 +5,15 @@ import pandas as pd
 from transformers import Wav2Vec2Model, Wav2Vec2Processor, Wav2Vec2PreTrainedModel, Wav2Vec2Config
 import torch.nn as nn
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import ReduceLROnPlateau, OneCycleLR
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from torchinfo import summary
 import matplotlib.pyplot as plt
 from torchmetrics.regression import ConcordanceCorrCoef
+import seaborn as sns
+from graphviz import Digraph
+
 
 class EmotionDataset(Dataset):
     def __init__(self, df, processor):
@@ -69,7 +72,7 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
             input_values
             #attention_mask
     ):
-        
+        print(input_values.size())
         outputs = self.wav2vec2(input_values)#, attention_mask=attention_mask)
         hidden_states = outputs[0]
         
@@ -80,6 +83,31 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         return hidden_states, logits
 
 
+def plot_distributions(df, columns, title, filename):
+    plt.figure(figsize=(12, 6))
+    for col in columns:
+        sns.histplot(df[col], kde=True, label=col)
+    plt.title(title)
+    plt.legend()
+    plt.show()
+    plt.savefig(filename)
+
+def visualize_dataset_distributions(train_df, test_df):
+    plot_distributions(train_df, ["Valence", "Arousal"], "Distribuzione - Train Set", "train_distr.png")
+    plot_distributions(test_df, ["Valence", "Arousal"], "Distribuzione - Test Set", "test_distr.png")
+
+
+def create_block_diagram():
+    dot = Digraph(format='png')
+    dot.node('A', 'Data Loading')
+    dot.node('B', 'Preprocessing')
+    dot.node('C', 'Dataset Split')
+    dot.node('D', 'Model Definition')
+    dot.node('E', 'Training')
+    dot.node('F', 'Validation')
+
+    dot.edges(['AB', 'BC', 'CD', 'DE', 'EF'])
+    dot.render('process_diagram', view=True)
 
 def save_checkpoint(model, optimizer, epoch, filename):
     checkpoint = {
@@ -96,7 +124,7 @@ def return_device():
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Dynamically set device
 
 
-def ccc(gold, pred):
+def ccc_func(gold, pred):
     
     #gold = gold.squeeze(-1)
     pred = pred.squeeze(-1)
@@ -115,9 +143,8 @@ def ccc(gold, pred):
 
 
 def ccc_loss(gold, pred):
-    #ccc_loss = 1 - ccc(gold, pred)
     ccc = ConcordanceCorrCoef().to("cuda")
-    ccc_loss = 1 - ccc(pred, gold)
+    ccc_loss = 1 - ccc(gold, pred)
     return ccc_loss
 
 
@@ -189,7 +216,6 @@ def train(model, device, train_dataloader, test_dataloader, optimizer, scheduler
         
             optimizer.step()
             loss = loss.item()
-            # avg loss over all processes
             epoch_loss += loss
 
         avg_epoch_loss = epoch_loss / len(train_dataloader)
@@ -288,7 +314,7 @@ def main():
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
     model = EmotionModel(config).to(device)
 
-    df = pd.read_pickle("data/full_data").sample(frac=1, random_state=42).reset_index(drop=True)
+    df = pd.read_pickle("data/IEMOCAP_useful").sample(frac=1, random_state=42).reset_index(drop=True)
     df["Valence"] = df["Valence"].clip(0, 1)
     df["Arousal"] = df["Arousal"].clip(0, 1)
 
@@ -299,6 +325,8 @@ def main():
 
     train_df, test_df = train_test_split(df, test_size=0.25, random_state=42)
 
+    visualize_dataset_distributions(train_df, test_df)
+    create_block_diagram()
     train_dataset = EmotionDataset(train_df, processor)
     test_dataset = EmotionDataset(test_df, processor)
 
@@ -309,7 +337,7 @@ def main():
 
     summary(model)
     optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.5, verbose=True)
+    scheduler = OneCycleLR(optimizer, max_lr=0.01, steps_per_epoch=len(train_dataloader), epochs=10)
     train(model, device, train_dataloader, test_dataloader, optimizer, scheduler, epochs = 50)
 
 
