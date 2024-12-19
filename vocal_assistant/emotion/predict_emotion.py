@@ -5,7 +5,7 @@ import pandas as pd
 from transformers import Wav2Vec2Model, Wav2Vec2Processor, Wav2Vec2PreTrainedModel, Wav2Vec2Config
 import torch.nn as nn
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import ReduceLROnPlateau, OneCycleLR
+from torch.optim.lr_scheduler import OneCycleLR
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from torchinfo import summary
@@ -13,7 +13,9 @@ import matplotlib.pyplot as plt
 from torchmetrics.regression import ConcordanceCorrCoef
 import seaborn as sns
 from graphviz import Digraph
-
+import numpy as np
+from torch.utils.tensorboard import SummaryWriter
+import torch.nn.functional as F
 
 class EmotionDataset(Dataset):
     def __init__(self, df, processor):
@@ -39,8 +41,28 @@ class EmotionDataset(Dataset):
         inputs['labels'] = torch.tensor([valence, arousal], dtype=torch.float32)
         return inputs
     
+        #check norms and gradients
+        #try L1 L2 and batch norm
+    
 
-
+class EmotionClassifier(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super(EmotionClassifier, self).__init__()
+        
+        # Aggiungo skip connections e batch normalization
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.norm1 = nn.BatchNorm1d(hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.norm2 = nn.BatchNorm1d(hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, output_dim)
+        
+    def forward(self, x):
+        h1 = torch.relu(self.norm1(self.fc1(x)))
+        h2 = torch.relu(self.norm2(self.fc2(h1)))
+        h = h1 + h2  # Skip connection
+        out = self.fc3(h)
+        return out
+    
 class EmotionModel(Wav2Vec2PreTrainedModel):
     r"""Speech emotion classifier."""
 
@@ -49,32 +71,33 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         super().__init__(config)
         self.config = config
         self.wav2vec2 = Wav2Vec2Model(self.config)
-        
+        self.regressor = EmotionClassifier(self.wav2vec2.config.hidden_size, self.wav2vec2.config.hidden_size, 2)
         #self.gradient_checkpointing_enable()
         
-        """for param in self.wav2vec2.feature_extractor.parameters():
+        for param in self.wav2vec2.feature_extractor.parameters():
             param.requires_grad = False
-        
+
         # Allow fine-tuning of transformer layers
         for param in self.wav2vec2.encoder.parameters():
-            param.requires_grad = True"""
+            param.requires_grad = True
 
-        self.regressor = nn.Sequential(
-            nn.Linear(self.wav2vec2.config.hidden_size, 32),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(32, 2)  # Valence and Arousal
-        )
+        """self.regressor = nn.Sequential(
+            nn.Linear(self.wav2vec2.config.hidden_size, self.wav2vec2.config.hidden_size),
+            nn.BatchNorm1d(self.wav2vec2.config.hidden_size),
+            #nn.ReLU(), #nn.Sigmoid()
+            #nn.Dropout(self.wav2vec2.config.final_dropout),
+            nn.BatchNorm1d(self.wav2vec2.config.hidden_size),
+            nn.Linear(self.wav2vec2.config.hidden_size, 2)  # Valence and Arousal
+        )"""
         self.init_weights()
 
     def forward(
             self,
-            input_values
-            #attention_mask
-    ):
-        print(input_values.size())
-        outputs = self.wav2vec2(input_values)#, attention_mask=attention_mask)
-        hidden_states = outputs[0]
+            input_values,
+        ):
+        outputs = self.wav2vec2(input_values)
+        #print(outputs)
+        hidden_states = outputs.last_hidden_state
         
         hidden_states = torch.mean(hidden_states, dim=1)
         
@@ -89,12 +112,30 @@ def plot_distributions(df, columns, title, filename):
         sns.histplot(df[col], kde=True, label=col)
     plt.title(title)
     plt.legend()
-    plt.show()
+    #plt.show()
     plt.savefig(filename)
 
 def visualize_dataset_distributions(train_df, test_df):
     plot_distributions(train_df, ["Valence", "Arousal"], "Distribuzione - Train Set", "train_distr.png")
     plot_distributions(test_df, ["Valence", "Arousal"], "Distribuzione - Test Set", "test_distr.png")
+
+
+writer = SummaryWriter("runs/emotion_model")
+
+def log_embedding_norms(model, epoch):
+    """ Log the L2 norm degli embedding del modello."""
+    for name, param in model.named_parameters():
+        if "wav2vec2.encoder" in name and param.requires_grad:
+            embedding_norm = param.norm(2).item()
+            writer.add_scalar(f"Embedding Norm/{name}", embedding_norm, epoch)
+
+
+def log_gradient_norms(model, epoch):
+    """ Log la norma dei gradienti durante l'addestramento."""
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            grad_norm = param.grad.norm(2).item()
+            writer.add_scalar(f"Gradient Norm/{name}", grad_norm, epoch)
 
 
 def create_block_diagram():
@@ -144,7 +185,9 @@ def ccc_func(gold, pred):
 
 def ccc_loss(gold, pred):
     ccc = ConcordanceCorrCoef().to("cuda")
-    ccc_loss = 1 - ccc(gold, pred)
+    coeff = ccc(gold, pred)
+    print("CCC:", coeff)
+    ccc_loss = 1 - coeff
     return ccc_loss
 
 
@@ -167,27 +210,41 @@ def compute_loss(model, device, batch, alpha, beta):
 
     _, logits = model(input_values=input_values)#, attention_mask=attention_mask)
     # Example in validation loop
-    print("Predictions:", logits[:4].detach().cpu().numpy())
-    print("True labels:", labels[:4].detach().cpu().numpy())
+    print("Predictions:", logits[:8].detach().cpu().numpy())
+    print("True labels:", labels[:8].detach().cpu().numpy())
 
     # Compute CCC Loss for valence and arousal
     """def mse(gold, pred):
         return torch.mean((gold-pred)**2)
     loss_val = mse(labels[:, 0], logits[:, 0])
     loss_ar = mse(labels[:, 1], logits[:, 1])"""
-
+    #loss_val = ccc_loss(labels, logits)
     loss_val = ccc_loss(labels[:, 0], logits[:, 0])
     loss_ar = ccc_loss(labels[:, 1], logits[:, 1])
 
     # Weighted total loss
     loss = alpha * loss_val + beta * loss_ar
     print(f"Loss (valence): {loss_val.item()}, Loss (arousal): {loss_ar.item()}, Total: {loss.item()}")
-
+    #print(f"Loss (valence): {loss_val.item()}")
     return loss
 
+def get_gradients(model):
+    gradients = {}
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            gradients[name] = param.grad.clone().detach().cpu().numpy()
+    return gradients
 
+def plot_gradients(gradients, layer_name):
+    if layer_name in gradients:
+        grad = gradients[layer_name]
+        plt.hist(grad.flatten(), bins=100)
+        plt.title(f'Gradient Distribution - {layer_name}')
+        plt.xlabel('Gradient Value')
+        plt.ylabel('Frequency')
+        plt.savefig("gradients.png")
 
-def train(model, device, train_dataloader, test_dataloader, optimizer, scheduler, \
+def train(model, device, train_dataloader, test_dataloader, \
           epochs=3, alpha=0.5, beta=0.5, checkpoint_path = "model_checkpoint_sampled.pth", patience_es = 8):
     """
     Train the model using CCC loss for valence and arousal.
@@ -198,6 +255,8 @@ def train(model, device, train_dataloader, test_dataloader, optimizer, scheduler
     val_losses = []
     best_val_loss = float("inf")
     no_improvement_epochs = 0
+    optimizer = AdamW(model.parameters(), lr=1e-3)
+    scheduler = OneCycleLR(optimizer, max_lr=0.1, steps_per_epoch=len(train_dataloader), epochs=10)
 
     for epoch in range(epochs):
         model.train()
@@ -213,7 +272,13 @@ def train(model, device, train_dataloader, test_dataloader, optimizer, scheduler
 
             # Backpropagation
             loss.backward()
-        
+            log_gradient_norms(model, epoch)
+            gradients = get_gradients(model)
+
+            for name, grad in gradients.items():
+                grad_norm = np.linalg.norm(grad)
+                print(f"Gradient Norm for {name}: {grad_norm}")
+
             optimizer.step()
             loss = loss.item()
             epoch_loss += loss
@@ -222,10 +287,13 @@ def train(model, device, train_dataloader, test_dataloader, optimizer, scheduler
         train_losses.append(avg_epoch_loss)
 
         print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {avg_epoch_loss}")
+        writer.add_scalar("Loss/Train", avg_epoch_loss, epoch)
+        log_embedding_norms(model, epoch)
         #save_checkpoint(model, optimizer, epoch, checkpoint_path)
 
         # Validation Loop
         val_loss = validate(model, device, test_dataloader, alpha, beta)
+        writer.add_scalar("Loss/Validation", val_loss, epoch)
         val_losses.append(val_loss)
         # Check if validation loss improved
         if val_loss < best_val_loss:
@@ -243,6 +311,7 @@ def train(model, device, train_dataloader, test_dataloader, optimizer, scheduler
             break
         scheduler.step(val_loss)
 
+    writer.close()
     plot_losses(train_losses, val_losses)
 
 
@@ -313,7 +382,9 @@ def main():
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
     model = EmotionModel(config).to(device)
 
-    df = pd.read_pickle("data/IEMOCAP_useful").sample(frac=1, random_state=42).reset_index(drop=True)
+    df = pd.read_pickle("data/MuSe_sample").sample(frac=0.6, random_state=42).reset_index(drop=True)
+    """with open("./data/MuSe_useful", "rb") as f:
+            df = pickle.load(f)"""
     df["Valence"] = df["Valence"].clip(0, 1)
     df["Arousal"] = df["Arousal"].clip(0, 1)
 
@@ -324,8 +395,8 @@ def main():
 
     train_df, test_df = train_test_split(df, test_size=0.25, random_state=42)
 
-    visualize_dataset_distributions(train_df, test_df)
-    create_block_diagram()
+    #visualize_dataset_distributions(train_df, test_df)
+    #create_block_diagram()
     train_dataset = EmotionDataset(train_df, processor)
     test_dataset = EmotionDataset(test_df, processor)
 
@@ -335,9 +406,8 @@ def main():
                                 num_workers=4, pin_memory=True)
 
     summary(model)
-    optimizer = AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
-    scheduler = OneCycleLR(optimizer, max_lr=0.01, steps_per_epoch=len(train_dataloader), epochs=10)
-    train(model, device, train_dataloader, test_dataloader, optimizer, scheduler, epochs = 50)
+    
+    train(model, device, train_dataloader, test_dataloader, epochs = 15)
 
 
 if __name__ == "__main__":
