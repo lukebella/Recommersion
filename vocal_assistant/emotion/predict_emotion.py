@@ -25,6 +25,18 @@ class EmotionDataset(Dataset):
 
     def __len__(self):
         return len(self.df)
+    
+    def normalize_waveform(self, wav_data):
+        """
+        Normalize audio waveform to the range [-1, 1].
+        """
+        if isinstance(wav_data, torch.Tensor):
+            wav_data = wav_data.float()  # Ensure float type
+        max_val = wav_data.abs().max()
+        if max_val > 0:
+            wav_data = wav_data / max_val
+        return wav_data
+
 
 
     def __getitem__(self, idx):
@@ -37,7 +49,15 @@ class EmotionDataset(Dataset):
         inputs = self.processor(wav_data, sampling_rate=self.sample_rate, return_tensors="pt", padding = 'max_length', \
                                  truncation = True, max_length = max_length, do_normalize = True)
         
-        inputs['input_values'] = inputs['input_values'].squeeze(0)
+        input_values = inputs['input_values'].squeeze(0)
+        input_values = self.normalize_waveform(input_values)
+
+        """if input_values.min() < -1.0 or input_values.max() > 1.0:
+            print(f"Audio not normalized! Min: {input_values.min()}, Max: {input_values.max()}")
+        else:
+            print(f"Audio normalized! Min: {input_values.min()}, Max: {input_values.max()}")"""
+
+        inputs['input_values'] = input_values
         inputs['labels'] = torch.tensor([valence, arousal], dtype=torch.float32)
         return inputs
     
@@ -71,7 +91,7 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         super().__init__(config)
         self.config = config
         self.wav2vec2 = Wav2Vec2Model(self.config)
-        self.regressor = EmotionClassifier(self.wav2vec2.config.hidden_size, self.wav2vec2.config.hidden_size, 2)
+        #self.regressor = EmotionClassifier(self.wav2vec2.config.hidden_size, self.wav2vec2.config.hidden_size, 2)
         #self.gradient_checkpointing_enable()
         
         for param in self.wav2vec2.feature_extractor.parameters():
@@ -81,15 +101,16 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         for param in self.wav2vec2.encoder.parameters():
             param.requires_grad = True
 
-        """self.regressor = nn.Sequential(
-            nn.Linear(self.wav2vec2.config.hidden_size, self.wav2vec2.config.hidden_size),
-            nn.BatchNorm1d(self.wav2vec2.config.hidden_size),
+        self.regressor = nn.Sequential(
+            nn.Linear(self.wav2vec2.config.hidden_size, 2),
+            nn.ReLU()
+            #nn.BatchNorm1d(self.wav2vec2.config.hidden_size),
             #nn.ReLU(), #nn.Sigmoid()
             #nn.Dropout(self.wav2vec2.config.final_dropout),
-            nn.BatchNorm1d(self.wav2vec2.config.hidden_size),
-            nn.Linear(self.wav2vec2.config.hidden_size, 2)  # Valence and Arousal
-        )"""
-        self.init_weights()
+            #nn.BatchNorm1d(self.wav2vec2.config.hidden_size),
+            #nn.Linear(self.wav2vec2.config.hidden_size, 2)  # Valence and Arousal
+        )
+        #self.init_weights()
 
     def forward(
             self,
@@ -138,17 +159,6 @@ def log_gradient_norms(model, epoch):
             writer.add_scalar(f"Gradient Norm/{name}", grad_norm, epoch)
 
 
-def create_block_diagram():
-    dot = Digraph(format='png')
-    dot.node('A', 'Data Loading')
-    dot.node('B', 'Preprocessing')
-    dot.node('C', 'Dataset Split')
-    dot.node('D', 'Model Definition')
-    dot.node('E', 'Training')
-    dot.node('F', 'Validation')
-
-    dot.edges(['AB', 'BC', 'CD', 'DE', 'EF'])
-    dot.render('process_diagram', view=True)
 
 def save_checkpoint(model, optimizer, epoch, filename):
     checkpoint = {
@@ -271,7 +281,10 @@ def train(model, device, train_dataloader, test_dataloader, \
             if loss is None: continue 
 
             # Backpropagation
+            print("\tOptimizer lr (before backward): ",optimizer.param_groups[0]['lr'])
             loss.backward()
+            print("\tOptimizer lr (after backward): ",optimizer.param_groups[0]['lr'])
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             log_gradient_norms(model, epoch)
             gradients = get_gradients(model)
 
@@ -280,6 +293,7 @@ def train(model, device, train_dataloader, test_dataloader, \
                 print(f"Gradient Norm for {name}: {grad_norm}")
 
             optimizer.step()
+            print("\tOptimizer lr (after step): ",optimizer.param_groups[0]['lr'])
             loss = loss.item()
             epoch_loss += loss
 
@@ -382,7 +396,13 @@ def main():
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
     model = EmotionModel(config).to(device)
 
-    df = pd.read_pickle("data/MuSe_sample").sample(frac=0.6, random_state=42).reset_index(drop=True)
+    def init_weights(m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+
+    model.apply(init_weights)
+
+    df = pd.read_pickle("data/MuSe_sample").sample(frac=1, random_state=42).reset_index(drop=True)
     """with open("./data/MuSe_useful", "rb") as f:
             df = pickle.load(f)"""
     df["Valence"] = df["Valence"].clip(0, 1)
