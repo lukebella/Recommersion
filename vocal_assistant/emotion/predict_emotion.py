@@ -12,7 +12,6 @@ from torchinfo import summary
 import matplotlib.pyplot as plt
 from torchmetrics.regression import ConcordanceCorrCoef
 import seaborn as sns
-from graphviz import Digraph
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
@@ -63,25 +62,7 @@ class EmotionDataset(Dataset):
     
         #check norms and gradients
         #try L1 L2 and batch norm
-    
 
-class EmotionClassifier(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
-        super(EmotionClassifier, self).__init__()
-        
-        # Aggiungo skip connections e batch normalization
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.norm1 = nn.BatchNorm1d(hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.norm2 = nn.BatchNorm1d(hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, output_dim)
-        
-    def forward(self, x):
-        h1 = torch.relu(self.norm1(self.fc1(x)))
-        h2 = torch.relu(self.norm2(self.fc2(h1)))
-        h = h1 + h2  # Skip connection
-        out = self.fc3(h)
-        return out
     
 class EmotionModel(Wav2Vec2PreTrainedModel):
     r"""Speech emotion classifier."""
@@ -102,13 +83,14 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
             param.requires_grad = True
 
         self.regressor = nn.Sequential(
-            nn.Linear(self.wav2vec2.config.hidden_size, 2),
-            nn.ReLU()
+            nn.Dropout(self.wav2vec2.config.final_dropout),
+            nn.Linear(self.wav2vec2.config.hidden_size, self.wav2vec2.config.hidden_size),
             #nn.BatchNorm1d(self.wav2vec2.config.hidden_size),
-            #nn.ReLU(), #nn.Sigmoid()
-            #nn.Dropout(self.wav2vec2.config.final_dropout),
+            #nn.ReLU(), #
+            nn.Sigmoid(),
+            nn.Dropout(self.wav2vec2.config.final_dropout),
             #nn.BatchNorm1d(self.wav2vec2.config.hidden_size),
-            #nn.Linear(self.wav2vec2.config.hidden_size, 2)  # Valence and Arousal
+            nn.Linear(self.wav2vec2.config.hidden_size, 2)  # Valence and Arousal
         )
         #self.init_weights()
 
@@ -119,9 +101,8 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         outputs = self.wav2vec2(input_values)
         #print(outputs)
         hidden_states = outputs.last_hidden_state
-        
         hidden_states = torch.mean(hidden_states, dim=1)
-        
+
         logits = self.regressor(hidden_states)
 
         return hidden_states, logits
@@ -255,7 +236,7 @@ def plot_gradients(gradients, layer_name):
         plt.savefig("gradients.png")
 
 def train(model, device, train_dataloader, test_dataloader, \
-          epochs=3, alpha=0.5, beta=0.5, checkpoint_path = "model_checkpoint_sampled.pth", patience_es = 8):
+          epochs=3, alpha=0.5, beta=0.5, checkpoint_path = "model_checkpoint_sampled.pth", patience_es = 15):
     """
     Train the model using CCC loss for valence and arousal.
     """
@@ -265,8 +246,8 @@ def train(model, device, train_dataloader, test_dataloader, \
     val_losses = []
     best_val_loss = float("inf")
     no_improvement_epochs = 0
-    optimizer = AdamW(model.parameters(), lr=1e-3)
-    scheduler = OneCycleLR(optimizer, max_lr=0.1, steps_per_epoch=len(train_dataloader), epochs=10)
+    optimizer = AdamW(model.parameters(), lr=1e-6)
+    #scheduler = OneCycleLR(optimizer, max_lr=0.1, steps_per_epoch=len(train_dataloader), epochs=10)
 
     for epoch in range(epochs):
         model.train()
@@ -281,19 +262,19 @@ def train(model, device, train_dataloader, test_dataloader, \
             if loss is None: continue 
 
             # Backpropagation
-            print("\tOptimizer lr (before backward): ",optimizer.param_groups[0]['lr'])
+            #print("\tOptimizer lr (before backward): ",optimizer.param_groups[0]['lr'])
             loss.backward()
-            print("\tOptimizer lr (after backward): ",optimizer.param_groups[0]['lr'])
+            #print("\tOptimizer lr (after backward): ",optimizer.param_groups[0]['lr'])
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             log_gradient_norms(model, epoch)
-            gradients = get_gradients(model)
+            """gradients = get_gradients(model)
 
             for name, grad in gradients.items():
                 grad_norm = np.linalg.norm(grad)
-                print(f"Gradient Norm for {name}: {grad_norm}")
+                print(f"Gradient Norm for {name}: {grad_norm}")"""
 
             optimizer.step()
-            print("\tOptimizer lr (after step): ",optimizer.param_groups[0]['lr'])
+            #print("\tOptimizer lr (after step): ",optimizer.param_groups[0]['lr'])
             loss = loss.item()
             epoch_loss += loss
 
@@ -323,7 +304,7 @@ def train(model, device, train_dataloader, test_dataloader, \
         if no_improvement_epochs >= patience_es:
             print("-----------EARLY STOPPING TRIGGERED.-----------")
             break
-        scheduler.step(val_loss)
+        #scheduler.step(val_loss)
 
     writer.close()
     plot_losses(train_losses, val_losses)
@@ -348,7 +329,7 @@ def validate(model, device, test_dataloader, alpha, beta):
     return avg_val_loss
 
 
-def plot_losses(train_losses, val_losses, filename = "./loss_plot_1.png"):
+def plot_losses(train_losses, val_losses, filename = "./loss_plot_trial.png"):
     plt.figure(figsize=(10, 6))
     plt.plot(range(1, len(train_losses) + 1), train_losses, label='Training Loss', marker='o')
     plt.plot(range(1, len(val_losses) + 1), val_losses, label='Validation Loss', marker='o')
@@ -357,9 +338,11 @@ def plot_losses(train_losses, val_losses, filename = "./loss_plot_1.png"):
     plt.title('Training and Validation Loss Over Epochs')
     plt.legend()
     plt.grid(True)
-    plt.show()
-    plt.savefig(filename)  # Save the plot to a file
+    plt.savefig(filename)
     print(f"Plot saved as {filename}")
+    #plt.show()
+    # Save the plot to a file
+    
 
 
 def load_trained_model(device, checkpoint_path, pretrained_model):
@@ -421,13 +404,13 @@ def main():
     test_dataset = EmotionDataset(test_df, processor)
 
     train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True,\
-                                num_workers=4, pin_memory=True)
+                                num_workers=4, pin_memory=True, drop_last = True)
     test_dataloader = DataLoader(test_dataset, batch_size=16,shuffle=True,\
-                                num_workers=4, pin_memory=True)
+                                num_workers=4, pin_memory=True, drop_last = True)
 
     summary(model)
     
-    train(model, device, train_dataloader, test_dataloader, epochs = 15)
+    train(model, device, train_dataloader, test_dataloader, epochs = 50)
 
 
 if __name__ == "__main__":
