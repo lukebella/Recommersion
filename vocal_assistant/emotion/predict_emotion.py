@@ -11,20 +11,22 @@ from sklearn.model_selection import train_test_split
 from torchinfo import summary
 import matplotlib.pyplot as plt
 from torchmetrics.regression import ConcordanceCorrCoef
-import seaborn as sns
-import numpy as np
 from torch.utils.tensorboard import SummaryWriter
-import torch.nn.functional as F
+
 
 class EmotionDataset(Dataset):
     def __init__(self, df, processor):
         self.df = df
         self.processor = processor
         self.sample_rate = 16000
+        self.max_seconds = 6  #max padding seconds
+        self.threshold = 0.8  #max percentage of which files to keep
+
 
     def __len__(self):
         return len(self.df)
-    
+
+
     def normalize_waveform(self, wav_data):
         """
         Normalize audio waveform to the range [-1, 1].
@@ -37,31 +39,26 @@ class EmotionDataset(Dataset):
         return wav_data
 
 
-
     def __getitem__(self, idx):
         wav_data = self.df.iloc[idx]["wav_file"]  
         valence = self.df.iloc[idx]["Valence"]
         arousal = self.df.iloc[idx]["Arousal"]
         
-        max_length = self.sample_rate * 10
+        max_length = self.sample_rate * self.max_seconds
 
+        if len(wav_data) > max_length / self.threshold:
+            return self.__getitem__((idx + 1) % len(self.df))
+        
         inputs = self.processor(wav_data, sampling_rate=self.sample_rate, return_tensors="pt", padding = 'max_length', \
-                                 truncation = True, max_length = max_length, do_normalize = True)
+                                truncation = True, max_length = max_length, do_normalize = True)
         
         input_values = inputs['input_values'].squeeze(0)
         input_values = self.normalize_waveform(input_values)
 
-        """if input_values.min() < -1.0 or input_values.max() > 1.0:
-            print(f"Audio not normalized! Min: {input_values.min()}, Max: {input_values.max()}")
-        else:
-            print(f"Audio normalized! Min: {input_values.min()}, Max: {input_values.max()}")"""
-
         inputs['input_values'] = input_values
         inputs['labels'] = torch.tensor([valence, arousal], dtype=torch.float32)
         return inputs
-    
-        #check norms and gradients
-        #try L1 L2 and batch norm
+
 
     
 class EmotionModel(Wav2Vec2PreTrainedModel):
@@ -72,54 +69,41 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         super().__init__(config)
         self.config = config
         self.wav2vec2 = Wav2Vec2Model(self.config)
-        #self.regressor = EmotionClassifier(self.wav2vec2.config.hidden_size, self.wav2vec2.config.hidden_size, 2)
-        #self.gradient_checkpointing_enable()
         
         for param in self.wav2vec2.feature_extractor.parameters():
+            param.requires_grad = False
+        
+        for param in self.wav2vec2.feature_projection.parameters():
             param.requires_grad = False
 
         # Allow fine-tuning of transformer layers
         for param in self.wav2vec2.encoder.parameters():
             param.requires_grad = True
 
+        """self.rnn = nn.LSTM(input_size= self.wav2vec2.config.hidden_size, hidden_size=self.wav2vec2.config.hidden_size,\
+                           batch_first=True, bidirectional=False)"""
+        
         self.regressor = nn.Sequential(
-            nn.Dropout(self.wav2vec2.config.final_dropout),
-            nn.Linear(self.wav2vec2.config.hidden_size, self.wav2vec2.config.hidden_size),
-            #nn.BatchNorm1d(self.wav2vec2.config.hidden_size),
-            #nn.ReLU(), #
-            nn.Sigmoid(),
-            nn.Dropout(self.wav2vec2.config.final_dropout),
-            #nn.BatchNorm1d(self.wav2vec2.config.hidden_size),
-            nn.Linear(self.wav2vec2.config.hidden_size, 2)  # Valence and Arousal
+            nn.Dropout(0.3),
+            nn.Linear(self.wav2vec2.config.hidden_size, 128), 
+            nn.Tanh(),
+            nn.Dropout(0.4),
+            nn.Linear(128, 2),
         )
-        #self.init_weights()
+
+        self.init_weights()
 
     def forward(
             self,
             input_values,
         ):
         outputs = self.wav2vec2(input_values)
-        #print(outputs)
         hidden_states = outputs.last_hidden_state
         hidden_states = torch.mean(hidden_states, dim=1)
-
+        #hidden_states,_ = self.rnn(hidden_states)
         logits = self.regressor(hidden_states)
 
         return hidden_states, logits
-
-
-def plot_distributions(df, columns, title, filename):
-    plt.figure(figsize=(12, 6))
-    for col in columns:
-        sns.histplot(df[col], kde=True, label=col)
-    plt.title(title)
-    plt.legend()
-    #plt.show()
-    plt.savefig(filename)
-
-def visualize_dataset_distributions(train_df, test_df):
-    plot_distributions(train_df, ["Valence", "Arousal"], "Distribuzione - Train Set", "train_distr.png")
-    plot_distributions(test_df, ["Valence", "Arousal"], "Distribuzione - Test Set", "test_distr.png")
 
 
 writer = SummaryWriter("runs/emotion_model")
@@ -140,7 +124,6 @@ def log_gradient_norms(model, epoch):
             writer.add_scalar(f"Gradient Norm/{name}", grad_norm, epoch)
 
 
-
 def save_checkpoint(model, optimizer, epoch, filename):
     checkpoint = {
         'model_state_dict': model.state_dict(),
@@ -154,24 +137,6 @@ def save_checkpoint(model, optimizer, epoch, filename):
     
 def return_device():
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Dynamically set device
-
-
-def ccc_func(gold, pred):
-    
-    #gold = gold.squeeze(-1)
-    pred = pred.squeeze(-1)
-    
-    gold_mean = torch.mean(gold, dim = 0, keepdim=True)
-    pred_mean = torch.mean(pred, dim = 0, keepdim=True)
-
-    covariance = torch.mean((gold - gold_mean) * (pred - pred_mean), dim=0)
-    gold_var = torch.mean((gold - gold_mean) ** 2, dim=0)
-    pred_var = torch.mean((pred - pred_mean) ** 2, dim=0)
-
-    #pearson_coefficient = covariance/(torch.sqrt(gold_var) * torch.sqrt(pred_var))
-    
-    ccc = (2 * covariance) / (gold_var + pred_var + (gold_mean - pred_mean) ** 2 + 1e-7)
-    return ccc
 
 
 def ccc_loss(gold, pred):
@@ -194,7 +159,7 @@ def batch_values(batch, device):
 def compute_loss(model, device, batch, alpha, beta):
     input_values, labels = batch_values(batch, device)
 
-    #TODO Resolve this issue
+    #For small batch sizes where variance could be low
     if labels[:, 0].std() < 1e-7 or labels[:, 1].std() < 1e-7:
         print("Value equal to 0 or invariance in labels!")
         return None
@@ -204,20 +169,14 @@ def compute_loss(model, device, batch, alpha, beta):
     print("Predictions:", logits[:8].detach().cpu().numpy())
     print("True labels:", labels[:8].detach().cpu().numpy())
 
-    # Compute CCC Loss for valence and arousal
-    """def mse(gold, pred):
-        return torch.mean((gold-pred)**2)
-    loss_val = mse(labels[:, 0], logits[:, 0])
-    loss_ar = mse(labels[:, 1], logits[:, 1])"""
-    #loss_val = ccc_loss(labels, logits)
     loss_val = ccc_loss(labels[:, 0], logits[:, 0])
     loss_ar = ccc_loss(labels[:, 1], logits[:, 1])
 
     # Weighted total loss
     loss = alpha * loss_val + beta * loss_ar
     print(f"Loss (valence): {loss_val.item()}, Loss (arousal): {loss_ar.item()}, Total: {loss.item()}")
-    #print(f"Loss (valence): {loss_val.item()}")
     return loss
+
 
 def get_gradients(model):
     gradients = {}
@@ -235,6 +194,7 @@ def plot_gradients(gradients, layer_name):
         plt.ylabel('Frequency')
         plt.savefig("gradients.png")
 
+
 def train(model, device, train_dataloader, test_dataloader, \
           epochs=3, alpha=0.5, beta=0.5, checkpoint_path = "model_checkpoint_sampled.pth", patience_es = 15):
     """
@@ -246,8 +206,8 @@ def train(model, device, train_dataloader, test_dataloader, \
     val_losses = []
     best_val_loss = float("inf")
     no_improvement_epochs = 0
-    optimizer = AdamW(model.parameters(), lr=1e-6)
-    #scheduler = OneCycleLR(optimizer, max_lr=0.1, steps_per_epoch=len(train_dataloader), epochs=10)
+    optimizer = AdamW(model.parameters(), lr=1e-5, weight_decay=1e-2)
+    scheduler = OneCycleLR(optimizer, max_lr=5e-5, steps_per_epoch=len(train_dataloader), epochs=10)
 
     for epoch in range(epochs):
         model.train()
@@ -262,10 +222,8 @@ def train(model, device, train_dataloader, test_dataloader, \
             if loss is None: continue 
 
             # Backpropagation
-            #print("\tOptimizer lr (before backward): ",optimizer.param_groups[0]['lr'])
             loss.backward()
-            #print("\tOptimizer lr (after backward): ",optimizer.param_groups[0]['lr'])
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             log_gradient_norms(model, epoch)
             """gradients = get_gradients(model)
 
@@ -274,7 +232,6 @@ def train(model, device, train_dataloader, test_dataloader, \
                 print(f"Gradient Norm for {name}: {grad_norm}")"""
 
             optimizer.step()
-            #print("\tOptimizer lr (after step): ",optimizer.param_groups[0]['lr'])
             loss = loss.item()
             epoch_loss += loss
 
@@ -284,7 +241,6 @@ def train(model, device, train_dataloader, test_dataloader, \
         print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {avg_epoch_loss}")
         writer.add_scalar("Loss/Train", avg_epoch_loss, epoch)
         log_embedding_norms(model, epoch)
-        #save_checkpoint(model, optimizer, epoch, checkpoint_path)
 
         # Validation Loop
         val_loss = validate(model, device, test_dataloader, alpha, beta)
@@ -304,7 +260,9 @@ def train(model, device, train_dataloader, test_dataloader, \
         if no_improvement_epochs >= patience_es:
             print("-----------EARLY STOPPING TRIGGERED.-----------")
             break
-        #scheduler.step(val_loss)
+        
+        plot_losses(train_losses, val_losses)
+        scheduler.step(val_loss)
 
     writer.close()
     plot_losses(train_losses, val_losses)
@@ -379,17 +337,7 @@ def main():
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
     model = EmotionModel(config).to(device)
 
-    def init_weights(m):
-        if isinstance(m, nn.Linear):
-            nn.init.xavier_uniform_(m.weight)
-
-    model.apply(init_weights)
-
-    df = pd.read_pickle("data/MuSe_sample").sample(frac=1, random_state=42).reset_index(drop=True)
-    """with open("./data/MuSe_useful", "rb") as f:
-            df = pickle.load(f)"""
-    df["Valence"] = df["Valence"].clip(0, 1)
-    df["Arousal"] = df["Arousal"].clip(0, 1)
+    df = pd.read_pickle("data/MuSe_sample").sample(frac=0.6, random_state=42).reset_index(drop=True)
 
     print(df["Valence"].describe())
     print(df["Arousal"].describe())
@@ -398,19 +346,17 @@ def main():
 
     train_df, test_df = train_test_split(df, test_size=0.25, random_state=42)
 
-    #visualize_dataset_distributions(train_df, test_df)
-    #create_block_diagram()
     train_dataset = EmotionDataset(train_df, processor)
     test_dataset = EmotionDataset(test_df, processor)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True,\
+    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True,\
                                 num_workers=4, pin_memory=True, drop_last = True)
-    test_dataloader = DataLoader(test_dataset, batch_size=16,shuffle=True,\
+    test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=True,\
                                 num_workers=4, pin_memory=True, drop_last = True)
 
     summary(model)
     
-    train(model, device, train_dataloader, test_dataloader, epochs = 50)
+    train(model, device, train_dataloader, test_dataloader, epochs = 25)
 
 
 if __name__ == "__main__":
