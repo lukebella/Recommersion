@@ -12,33 +12,98 @@ from torchinfo import summary
 import matplotlib.pyplot as plt
 from torchmetrics.regression import ConcordanceCorrCoef
 from torch.utils.tensorboard import SummaryWriter
+import numpy as np
+import torchaudio
+import random
+import librosa
+
+
+class AudioAugmentation:
+    def __init__(self, sample_rate=16000, noise_level=0.005, time_mask_param=30, freq_mask_param=15):
+        self.sample_rate = sample_rate
+        self.noise_level = noise_level
+        self.time_mask_param = time_mask_param
+        self.freq_mask_param = freq_mask_param
+
+    def add_background_noise(self, waveform):
+        noise = torch.randn_like(torch.from_numpy(waveform)) * self.noise_level
+        return torch.add(torch.from_numpy(waveform), noise)
+
+    def time_stretch(self, waveform, rate=1.1):
+        spectrogram = torchaudio.transforms.Spectrogram()(waveform)
+        stretched = torchaudio.transforms.TimeStretch()(spectrogram)
+        return torch.tensor(stretched)
+
+    def pitch_shift(self, waveform):
+        return librosa.effects.pitch_shift(y=waveform, sr=self.sample_rate, n_steps=random.randint(-6, 6))
+
+    
+    def augment(self, waveform):
+        augmentations = [
+            #self.add_background_noise,
+            #lambda x: self.time_stretch(x, rate=random.uniform(0.8, 1.2)),
+            lambda x: self.pitch_shift(x),
+        ]
+        random.shuffle(augmentations)
+        for augment in augmentations[:1]:  # Apply 2 random augmentations
+            waveform = augment(waveform)
+        return waveform
+
 
 
 class EmotionDataset(Dataset):
-    def __init__(self, df, processor):
+    def __init__(self, df, processor, augmenter, attention_mask):
         self.df = df
         self.processor = processor
+        self.augmenter = augmenter
         self.sample_rate = 16000
         self.max_seconds = 6  #max padding seconds
         self.threshold = 0.8  #max percentage of which files to keep
+        self.attention_mask = attention_mask
 
 
     def __len__(self):
         return len(self.df)
 
 
+    def only_vocals(self, waveform):
+        S_full, phase = librosa.magphase(librosa.stft(waveform))
+        S_filter = librosa.decompose.nn_filter(S_full,
+                                        aggregate=np.median,
+                                        metric='cosine',)
+                                        #width=int(librosa.time_to_frames(2, sr=self.sample_rate)))
+
+        S_filter = np.minimum(S_full, S_filter)
+        margin_v = 2
+        power = 2
+
+        mask_v = librosa.util.softmask(S_full - S_filter,
+                                    margin_v * S_filter,
+                                    power=power)
+        
+        S_foreground = mask_v * S_full
+        return librosa.istft(S_foreground * phase)
+
+
+
     def normalize_waveform(self, wav_data):
         """
         Normalize audio waveform to the range [-1, 1].
+        Handles both torch.Tensor and numpy.ndarray.
         """
         if isinstance(wav_data, torch.Tensor):
-            wav_data = wav_data.float()  # Ensure float type
+            wav_data = wav_data.float()  # Ensure float type for PyTorch tensors
+        elif isinstance(wav_data, np.ndarray):
+            wav_data = wav_data.astype(np.float32)  # Ensure float32 type for NumPy arrays
+            wav_data = torch.from_numpy(wav_data)  # Convert to torch.Tensor for consistency
+        
         max_val = wav_data.abs().max()
         if max_val > 0:
             wav_data = wav_data / max_val
-        return wav_data
+        
+        return wav_data.numpy() if isinstance(wav_data, torch.Tensor) else wav_data
 
-
+    
     def __getitem__(self, idx):
         wav_data = self.df.iloc[idx]["wav_file"]  
         valence = self.df.iloc[idx]["Valence"]
@@ -49,14 +114,52 @@ class EmotionDataset(Dataset):
         if len(wav_data) > max_length / self.threshold:
             return self.__getitem__((idx + 1) % len(self.df))
         
+        wav_data = self.normalize_waveform(wav_data)
+        #wav_data = self.only_vocals(wav_data)
+        #wav_data = librosa.feature.melspectrogram(y=wav_data, sr=self.sample_rate, n_mels = 1)
+        """rand_augmenter = int(random.random()*1000)
+
+        if self.augmenter and (rand_augmenter%4==0):
+            wav_data = self.augmenter.augment(wav_data)"""
+    
+
+        """max_time = self.sample_rate * self.max_seconds // 512  # Approximate time frames for max seconds
+        mel_spectrogram = F.pad(mel_spectrogram, (0, max_time))"""
+        """target_frames = 600  # Approx. 600 frames for 6 seconds at 16kHz with default settings
+        if mel_spectrogram.shape[1] < target_frames:
+            # Pad time dimension with zeros
+            padding = target_frames - mel_spectrogram.shape[1]
+            mel_spectrogram = torch.nn.functional.pad(mel_spectrogram, (0, padding), mode='constant', value=0)
+        else:
+            # Truncate time dimension
+            mel_spectrogram = mel_spectrogram[:, :target_frames]"""
+
         inputs = self.processor(wav_data, sampling_rate=self.sample_rate, return_tensors="pt", padding = 'max_length', \
-                                truncation = True, max_length = max_length, do_normalize = True)
+                                truncation = True, max_length = max_length, do_normalize = True,\
+                                return_attention_mask = self.attention_mask)
         
+        #print(inputs)
         input_values = inputs['input_values'].squeeze(0)
-        input_values = self.normalize_waveform(input_values)
+        mel_spectrogram = librosa.feature.melspectrogram(y=input_values.numpy(), sr=self.sample_rate, n_mels=40,)
+        mel_spectrogram = librosa.power_to_db(mel_spectrogram, ref=np.max)
+        mel_spectrogram_derivative_1 = librosa.feature.delta(mel_spectrogram, order=1)
+        mel_spectrogram_derivative_2 = librosa.feature.delta(mel_spectrogram, order=2)
+
+        # Stack the original spectrogram and the derivatives to form the final input
+        mel_spectrogram_stack = np.stack([mel_spectrogram, mel_spectrogram_derivative_1, mel_spectrogram_derivative_2], axis=0)
+
+        # Normalize the stacked spectrogram
+        mel_spectrogram_stack = (mel_spectrogram_stack - np.mean(mel_spectrogram_stack)) / np.std(mel_spectrogram_stack)
+
+        # Ensure the shape is [3, 40, 600] for the CNN input
+        mel_spectrogram_stack = torch.tensor(mel_spectrogram_stack, dtype=torch.float32)#.permute(1, 0, 2)
+
 
         inputs['input_values'] = input_values
+        inputs['mel_spectrogram'] = mel_spectrogram_stack
         inputs['labels'] = torch.tensor([valence, arousal], dtype=torch.float32)
+
+
         return inputs
 
 
@@ -80,29 +183,52 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         for param in self.wav2vec2.encoder.parameters():
             param.requires_grad = True
 
-        """self.rnn = nn.LSTM(input_size= self.wav2vec2.config.hidden_size, hidden_size=self.wav2vec2.config.hidden_size,\
-                           batch_first=True, bidirectional=False)"""
+        self.rnn = nn.LSTM(input_size= 4528, hidden_size=256,\
+                           batch_first=True, bidirectional=False)
+        self.rnn2 = nn.LSTM(input_size= 256, hidden_size=64,\
+                           batch_first=True, bidirectional=False)
+        
+        self.mel_cnn = nn.Sequential(
+            nn.Conv2d(3, 4, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=(2, 2)),
+            nn.Conv2d(4, 8, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=(2, 2)),
+            nn.Flatten()
+        )
         
         self.regressor = nn.Sequential(
-            nn.Dropout(0.3),
-            nn.Linear(self.wav2vec2.config.hidden_size, 128), 
-            nn.Tanh(),
-            nn.Dropout(0.4),
-            nn.Linear(128, 2),
+            nn.Dropout(0.5),
+            nn.Linear(64, 2), 
+            #nn.Linear(self.wav2vec2.config.hidden_size + 32 * (128 // 4) * (16000 // 4 // 2**4), 128), 
+            # nn.Tanh(),
+            # nn.Dropout(0.3),
+            # nn.Linear(32, 2),
         )
 
         self.init_weights()
 
+
     def forward(
             self,
             input_values,
+            mel_spectrogram
         ):
         outputs = self.wav2vec2(input_values)
         hidden_states = outputs.last_hidden_state
         hidden_states = torch.mean(hidden_states, dim=1)
-        #hidden_states,_ = self.rnn(hidden_states)
-        logits = self.regressor(hidden_states)
+        mel_features = self.mel_cnn(mel_spectrogram)
+        print("\t\tHidden States Size:", hidden_states.size())  # Expect: (batch_size, wav2vec_hidden_size)
+        print("\t\tMel Features Size:", mel_features.size())    # Expect: (batch_size, flattened_size)
 
+        # Combine features
+        combined_features = torch.cat((hidden_states, mel_features), dim=1)
+        print(combined_features.size())
+        temp,_ = self.rnn(combined_features)
+        temp,_ = self.rnn2(temp)
+        logits = self.regressor(temp)
+        
         return hidden_states, logits
 
 
@@ -149,22 +275,25 @@ def ccc_loss(gold, pred):
 
 def batch_values(batch, device):
     input_values = batch['input_values'].to(device)
+    mel_spectrogram = batch['mel_spectrogram'].to(device)
     #attention_mask = batch['attention_mask'].to(device)
     labels = batch['labels'].to(device)
 
-    return input_values, labels
+    return input_values, labels, mel_spectrogram
 
 
 
 def compute_loss(model, device, batch, alpha, beta):
-    input_values, labels = batch_values(batch, device)
+    input_values, labels, mel_spectrogram = batch_values(batch, device)
 
-    #For small batch sizes where variance could be low
+    #For small batch sizes where variance could be very low
     if labels[:, 0].std() < 1e-7 or labels[:, 1].std() < 1e-7:
         print("Value equal to 0 or invariance in labels!")
         return None
+    
+    _,logits = model(input_values, mel_spectrogram)
 
-    _, logits = model(input_values=input_values)#, attention_mask=attention_mask)
+    #_, logits = model(input_values=input_values)#, attention_mask=attention_mask)
     # Example in validation loop
     print("Predictions:", logits[:8].detach().cpu().numpy())
     print("True labels:", labels[:8].detach().cpu().numpy())
@@ -206,8 +335,8 @@ def train(model, device, train_dataloader, test_dataloader, \
     val_losses = []
     best_val_loss = float("inf")
     no_improvement_epochs = 0
-    optimizer = AdamW(model.parameters(), lr=1e-5, weight_decay=1e-2)
-    scheduler = OneCycleLR(optimizer, max_lr=5e-5, steps_per_epoch=len(train_dataloader), epochs=10)
+    optimizer = AdamW(model.parameters(), lr=1e-5, weight_decay=1e-3)
+    scheduler = OneCycleLR(optimizer, max_lr=1e-5, steps_per_epoch=len(train_dataloader), epochs=10)
 
     for epoch in range(epochs):
         model.train()
@@ -328,6 +457,33 @@ def predict_emotion(model, device, processor, wav_data):
     
     return outputs[1]
 
+import torch.nn.functional as F
+
+
+def custom_collate(batch):
+    input_values = [item["input_values"] for item in batch]
+    mel_spectrograms = [item["mel_spectrogram"] for item in batch]
+    labels = torch.stack([item["labels"] for item in batch])
+
+    # Determine the max time dimension
+    max_time = max(mel.size(1) for mel in mel_spectrograms)
+
+    # Pad each mel_spectrogram along the time dimension
+    mel_spectrograms = [
+        F.pad(mel, (0, max_time - mel.size(1))) for mel in mel_spectrograms
+    ]
+
+    # Stack mel_spectrograms and input_values into tensors
+    mel_spectrograms = torch.stack(mel_spectrograms)
+    input_values = torch.nn.utils.rnn.pad_sequence(input_values, batch_first=True, padding_value=0.0)
+
+    return {
+        "input_values": input_values,
+        "mel_spectrogram": mel_spectrograms,
+        "labels": labels,
+    }
+
+
 
 def main():
     device = return_device()
@@ -337,22 +493,32 @@ def main():
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
     model = EmotionModel(config).to(device)
 
-    df = pd.read_pickle("data/MuSe_sample").sample(frac=0.6, random_state=42).reset_index(drop=True)
-
+    df = pd.read_pickle("data/MuSe_sample").sample(frac=1, random_state=42)#.reset_index(drop=True)
+    
     print(df["Valence"].describe())
     print(df["Arousal"].describe())
+
     
-    print(df.head(10))
+    df.drop(columns = ["Name"], inplace = True)
+    print(df)
 
-    train_df, test_df = train_test_split(df, test_size=0.25, random_state=42)
 
-    train_dataset = EmotionDataset(train_df, processor)
-    test_dataset = EmotionDataset(test_df, processor)
+    train_df, test_df = train_test_split(df, test_size=0.3, random_state=42)
+
+    augmenter = AudioAugmentation(sample_rate=16000)
+
+    att_mask = False
+    if config.feat_extract_norm == "layer":
+        print("\tReturn Attention Mask")
+        att_mask = True
+    
+    train_dataset = EmotionDataset(train_df, processor, augmenter, att_mask)
+    test_dataset = EmotionDataset(test_df, processor, augmenter, att_mask)
 
     train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True,\
-                                num_workers=4, pin_memory=True, drop_last = True)
+                                num_workers=4, pin_memory=True, drop_last = True, )#collate_fn = custom_collate)
     test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=True,\
-                                num_workers=4, pin_memory=True, drop_last = True)
+                                num_workers=4, pin_memory=True, drop_last = True,)# collate_fn = custom_collate)
 
     summary(model)
     
