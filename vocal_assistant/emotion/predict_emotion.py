@@ -102,6 +102,23 @@ class EmotionDataset(Dataset):
             wav_data = wav_data / max_val
         
         return wav_data.numpy() if isinstance(wav_data, torch.Tensor) else wav_data
+    
+    
+    def get_mel_spectrogram(self, input_values):
+        mel_spectrogram = librosa.feature.melspectrogram(y=input_values.numpy(), sr=self.sample_rate, n_mels=40,)
+        mel_spectrogram = librosa.power_to_db(mel_spectrogram, ref=np.max)
+        mel_spectrogram_derivative_1 = librosa.feature.delta(mel_spectrogram, order=1)
+        mel_spectrogram_derivative_2 = librosa.feature.delta(mel_spectrogram, order=2)
+
+        # Stack the original spectrogram and the derivatives to form the final input
+        mel_spectrogram_stack = np.stack([mel_spectrogram, mel_spectrogram_derivative_1, mel_spectrogram_derivative_2], axis=0)
+
+        # Normalize the stacked spectrogram
+        mel_spectrogram_stack = (mel_spectrogram_stack - np.mean(mel_spectrogram_stack)) / np.std(mel_spectrogram_stack)
+
+        # Ensure the shape is [3, 40, 600] for the CNN input
+        return torch.tensor(mel_spectrogram_stack, dtype=torch.float32)#.permute(1, 0, 2)
+
 
     
     def __getitem__(self, idx):
@@ -116,23 +133,10 @@ class EmotionDataset(Dataset):
         
         wav_data = self.normalize_waveform(wav_data)
         #wav_data = self.only_vocals(wav_data)
-        #wav_data = librosa.feature.melspectrogram(y=wav_data, sr=self.sample_rate, n_mels = 1)
-        """rand_augmenter = int(random.random()*1000)
+        rand_augmenter = int(random.random()*1000)
 
-        if self.augmenter and (rand_augmenter%4==0):
-            wav_data = self.augmenter.augment(wav_data)"""
-    
-
-        """max_time = self.sample_rate * self.max_seconds // 512  # Approximate time frames for max seconds
-        mel_spectrogram = F.pad(mel_spectrogram, (0, max_time))"""
-        """target_frames = 600  # Approx. 600 frames for 6 seconds at 16kHz with default settings
-        if mel_spectrogram.shape[1] < target_frames:
-            # Pad time dimension with zeros
-            padding = target_frames - mel_spectrogram.shape[1]
-            mel_spectrogram = torch.nn.functional.pad(mel_spectrogram, (0, padding), mode='constant', value=0)
-        else:
-            # Truncate time dimension
-            mel_spectrogram = mel_spectrogram[:, :target_frames]"""
+        if self.augmenter and (rand_augmenter%3==0):
+            wav_data = self.augmenter.augment(wav_data)
 
         inputs = self.processor(wav_data, sampling_rate=self.sample_rate, return_tensors="pt", padding = 'max_length', \
                                 truncation = True, max_length = max_length, do_normalize = True,\
@@ -140,23 +144,9 @@ class EmotionDataset(Dataset):
         
         #print(inputs)
         input_values = inputs['input_values'].squeeze(0)
-        mel_spectrogram = librosa.feature.melspectrogram(y=input_values.numpy(), sr=self.sample_rate, n_mels=40,)
-        mel_spectrogram = librosa.power_to_db(mel_spectrogram, ref=np.max)
-        mel_spectrogram_derivative_1 = librosa.feature.delta(mel_spectrogram, order=1)
-        mel_spectrogram_derivative_2 = librosa.feature.delta(mel_spectrogram, order=2)
-
-        # Stack the original spectrogram and the derivatives to form the final input
-        mel_spectrogram_stack = np.stack([mel_spectrogram, mel_spectrogram_derivative_1, mel_spectrogram_derivative_2], axis=0)
-
-        # Normalize the stacked spectrogram
-        mel_spectrogram_stack = (mel_spectrogram_stack - np.mean(mel_spectrogram_stack)) / np.std(mel_spectrogram_stack)
-
-        # Ensure the shape is [3, 40, 600] for the CNN input
-        mel_spectrogram_stack = torch.tensor(mel_spectrogram_stack, dtype=torch.float32)#.permute(1, 0, 2)
-
 
         inputs['input_values'] = input_values
-        inputs['mel_spectrogram'] = mel_spectrogram_stack
+        inputs['mel_spectrogram'] = self.get_mel_spectrogram(input_values)
         inputs['labels'] = torch.tensor([valence, arousal], dtype=torch.float32)
 
 
@@ -183,10 +173,9 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         for param in self.wav2vec2.encoder.parameters():
             param.requires_grad = True
 
-        self.rnn = nn.LSTM(input_size= 4528, hidden_size=256,\
-                           batch_first=True, bidirectional=False)
-        self.rnn2 = nn.LSTM(input_size= 256, hidden_size=64,\
-                           batch_first=True, bidirectional=False)
+        """self.rnn = nn.LSTM(input_size= 4528, hidden_size=2,\
+                           batch_first=True, bidirectional=False)"""
+        
         
         self.mel_cnn = nn.Sequential(
             nn.Conv2d(3, 4, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
@@ -197,15 +186,11 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
             nn.MaxPool2d(kernel_size=(2, 2)),
             nn.Flatten()
         )
-        
-        self.regressor = nn.Sequential(
-            nn.Dropout(0.5),
-            nn.Linear(64, 2), 
-            #nn.Linear(self.wav2vec2.config.hidden_size + 32 * (128 // 4) * (16000 // 4 // 2**4), 128), 
-            # nn.Tanh(),
-            # nn.Dropout(0.3),
-            # nn.Linear(32, 2),
-        )
+
+        self.rnn = nn.LSTM(input_size= config.hidden_size, hidden_size=config.hidden_size, num_layers=2, \
+                           batch_first=True, bidirectional=True, dropout = 0.3)        
+        self.dropout = nn.Dropout(config.final_dropout)
+        self.regressor = nn.Linear(config.hidden_size * 2, config.num_labels)
 
         self.init_weights()
 
@@ -219,14 +204,13 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         hidden_states = outputs.last_hidden_state
         hidden_states = torch.mean(hidden_states, dim=1)
         mel_features = self.mel_cnn(mel_spectrogram)
-        print("\t\tHidden States Size:", hidden_states.size())  # Expect: (batch_size, wav2vec_hidden_size)
-        print("\t\tMel Features Size:", mel_features.size())    # Expect: (batch_size, flattened_size)
+    
 
         # Combine features
         combined_features = torch.cat((hidden_states, mel_features), dim=1)
-        print(combined_features.size())
+        #print(combined_features.size())
         temp,_ = self.rnn(combined_features)
-        temp,_ = self.rnn2(temp)
+        # temp,_ = self.rnn2(temp)
         logits = self.regressor(temp)
         
         return hidden_states, logits
@@ -276,7 +260,6 @@ def ccc_loss(gold, pred):
 def batch_values(batch, device):
     input_values = batch['input_values'].to(device)
     mel_spectrogram = batch['mel_spectrogram'].to(device)
-    #attention_mask = batch['attention_mask'].to(device)
     labels = batch['labels'].to(device)
 
     return input_values, labels, mel_spectrogram
@@ -284,7 +267,7 @@ def batch_values(batch, device):
 
 
 def compute_loss(model, device, batch, alpha, beta):
-    input_values, labels, mel_spectrogram = batch_values(batch, device)
+    input_values, labels,  mel_spectrogram = batch_values(batch, device)  #,
 
     #For small batch sizes where variance could be very low
     if labels[:, 0].std() < 1e-7 or labels[:, 1].std() < 1e-7:
@@ -314,6 +297,7 @@ def get_gradients(model):
             gradients[name] = param.grad.clone().detach().cpu().numpy()
     return gradients
 
+
 def plot_gradients(gradients, layer_name):
     if layer_name in gradients:
         grad = gradients[layer_name]
@@ -325,7 +309,7 @@ def plot_gradients(gradients, layer_name):
 
 
 def train(model, device, train_dataloader, test_dataloader, \
-          epochs=3, alpha=0.5, beta=0.5, checkpoint_path = "model_checkpoint_sampled.pth", patience_es = 15):
+          epochs=3, alpha=0.55, beta=0.45, checkpoint_path = "model_checkpoint_sampled.pth", patience_es = 15):
     """
     Train the model using CCC loss for valence and arousal.
     """
@@ -335,8 +319,8 @@ def train(model, device, train_dataloader, test_dataloader, \
     val_losses = []
     best_val_loss = float("inf")
     no_improvement_epochs = 0
-    optimizer = AdamW(model.parameters(), lr=1e-5, weight_decay=1e-3)
-    scheduler = OneCycleLR(optimizer, max_lr=1e-5, steps_per_epoch=len(train_dataloader), epochs=10)
+    optimizer = AdamW(model.parameters(), lr=1e-5, weight_decay=1e-2)
+    scheduler = OneCycleLR(optimizer, max_lr=5e-5, steps_per_epoch=len(train_dataloader), epochs=10)
 
     for epoch in range(epochs):
         model.train()
@@ -352,13 +336,13 @@ def train(model, device, train_dataloader, test_dataloader, \
 
             # Backpropagation
             loss.backward()
-            #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             log_gradient_norms(model, epoch)
-            """gradients = get_gradients(model)
+            gradients = get_gradients(model)
 
             for name, grad in gradients.items():
                 grad_norm = np.linalg.norm(grad)
-                print(f"Gradient Norm for {name}: {grad_norm}")"""
+                #print(f"Gradient Norm for {name}: {grad_norm}")
 
             optimizer.step()
             loss = loss.item()
@@ -457,32 +441,6 @@ def predict_emotion(model, device, processor, wav_data):
     
     return outputs[1]
 
-import torch.nn.functional as F
-
-
-def custom_collate(batch):
-    input_values = [item["input_values"] for item in batch]
-    mel_spectrograms = [item["mel_spectrogram"] for item in batch]
-    labels = torch.stack([item["labels"] for item in batch])
-
-    # Determine the max time dimension
-    max_time = max(mel.size(1) for mel in mel_spectrograms)
-
-    # Pad each mel_spectrogram along the time dimension
-    mel_spectrograms = [
-        F.pad(mel, (0, max_time - mel.size(1))) for mel in mel_spectrograms
-    ]
-
-    # Stack mel_spectrograms and input_values into tensors
-    mel_spectrograms = torch.stack(mel_spectrograms)
-    input_values = torch.nn.utils.rnn.pad_sequence(input_values, batch_first=True, padding_value=0.0)
-
-    return {
-        "input_values": input_values,
-        "mel_spectrogram": mel_spectrograms,
-        "labels": labels,
-    }
-
 
 
 def main():
@@ -493,7 +451,10 @@ def main():
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
     model = EmotionModel(config).to(device)
 
-    df = pd.read_pickle("data/MuSe_sample").sample(frac=1, random_state=42)#.reset_index(drop=True)
+    muse = pd.read_pickle("../data/MuSe_sample").sample(frac=1, random_state=42)#.reset_index(drop=True)
+    iemocap = pd.read_pickle("../data/IEMOCAP_useful").sample(frac=1, random_state=42)
+
+    df = pd.concat([iemocap, muse]).sample(frac=1, random_state=42)
     
     print(df["Valence"].describe())
     print(df["Arousal"].describe())
@@ -503,7 +464,7 @@ def main():
     print(df)
 
 
-    train_df, test_df = train_test_split(df, test_size=0.3, random_state=42)
+    train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
 
     augmenter = AudioAugmentation(sample_rate=16000)
 
@@ -516,13 +477,13 @@ def main():
     test_dataset = EmotionDataset(test_df, processor, augmenter, att_mask)
 
     train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True,\
-                                num_workers=4, pin_memory=True, drop_last = True, )#collate_fn = custom_collate)
+                                num_workers=4, pin_memory=True, drop_last = True, )
     test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=True,\
-                                num_workers=4, pin_memory=True, drop_last = True,)# collate_fn = custom_collate)
+                                num_workers=4, pin_memory=True, drop_last = True,)
 
     summary(model)
     
-    train(model, device, train_dataloader, test_dataloader, epochs = 25)
+    train(model, device, train_dataloader, test_dataloader, epochs = 30)
 
 
 if __name__ == "__main__":
