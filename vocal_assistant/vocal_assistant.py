@@ -66,7 +66,6 @@ class VocalAssistant:
     
     def process_audio_file(self, wav_file:bytes):
         # Initialize the recognizer
-        command = ""
         audio, _ = librosa.load(io.BytesIO(wav_file), sr=16000)
         return audio
     

@@ -15,3 +15,5 @@ interface.py
 *.wav
 .vscode
 parallelism.py
+myenv/
+runs/

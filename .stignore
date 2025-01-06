@@ -1,2 +1,6 @@
-*.tar
 *.pth
+.git/
+data/IEMOCAP_useful.pkl
+data/MuSe_useful.pkl
+data/Songs.pkl
+data/full_data.pkl

@@ -8,14 +8,15 @@ import pandas as pd
 import numpy as np
 import threading
 import dask.dataframe as dd
+import pickle
 
 class Functions:
     def __init__(self, callback):
         self.callback = callback
+        self.vc = VocalAssistant(1)
         threading.Thread(target=self.load_data).start()
 
     def load_data(self):
-        self.vc = VocalAssistant(1)
         self.device = return_device()
         self.audeering_model_name = 'audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'
         self.custom_model_name = "model_checkpoint_sampled.pth"
@@ -23,7 +24,9 @@ class Functions:
         self.custom_model, self.custom_processor = load_trained_model(self.device, \
                                                                       self.audeering_model_name, self.pretrained_model)
         self.custom = False
-        self.data = dd.read_table("./data/Songs")
+        with open("./data/Songs", "rb") as f:
+            self.data = pickle.load(f)
+        print("Songs loaded!")
         #self.data = pd.read_pickle("./data/Songs").sample(frac = 0.2, random_state=42).reset_index(drop=True)
 
         self.callback()
@@ -158,6 +161,8 @@ class Recommersion:
     def adjust_recommendation(self):
         valence = self.valence_slider.get()
         arousal = self.arousal_slider.get()
+        playlist = self.functions.generate_playlist([valence, arousal])
+        self.update_playlist(playlist)
         messagebox.showinfo("Adjusting Recommendation", f"Adjusting playlist with valence {valence} and arousal {arousal}")
 
     def play_song(self):
@@ -174,5 +179,6 @@ class Recommersion:
 
 if __name__ == "__main__":
     root = tk.Tk()
+    root.option_add("*Font", "Arial 12")
     app = Recommersion(root)
     root.mainloop()

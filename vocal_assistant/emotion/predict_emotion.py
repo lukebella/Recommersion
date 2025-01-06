@@ -133,10 +133,10 @@ class EmotionDataset(Dataset):
         
         wav_data = self.normalize_waveform(wav_data)
         #wav_data = self.only_vocals(wav_data)
-        rand_augmenter = int(random.random()*1000)
+        """rand_augmenter = int(random.random()*1000)
 
         if self.augmenter and (rand_augmenter%3==0):
-            wav_data = self.augmenter.augment(wav_data)
+            wav_data = self.augmenter.augment(wav_data)"""
 
         inputs = self.processor(wav_data, sampling_rate=self.sample_rate, return_tensors="pt", padding = 'max_length', \
                                 truncation = True, max_length = max_length, do_normalize = True,\
@@ -187,10 +187,13 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
             nn.Flatten()
         )
 
-        self.rnn = nn.LSTM(input_size= config.hidden_size, hidden_size=config.hidden_size, num_layers=2, \
-                           batch_first=True, bidirectional=True, dropout = 0.3)        
+        self.rnn = nn.LSTM(input_size= 4528, hidden_size=config.hidden_size, num_layers=2, \
+                           batch_first=True, bidirectional=True, dropout=0.3)
+        
+              
         self.dropout = nn.Dropout(config.final_dropout)
-        self.regressor = nn.Linear(config.hidden_size * 2, config.num_labels)
+        self.regressor = nn.Linear(config.hidden_size*2, config.num_labels)
+        #self.act = nn.Tanh()
 
         self.init_weights()
 
@@ -209,8 +212,9 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         # Combine features
         combined_features = torch.cat((hidden_states, mel_features), dim=1)
         #print(combined_features.size())
+        combined_features = self.dropout(combined_features)
         temp,_ = self.rnn(combined_features)
-        # temp,_ = self.rnn2(temp)
+        temp = self.dropout(temp)
         logits = self.regressor(temp)
         
         return hidden_states, logits
@@ -267,7 +271,7 @@ def batch_values(batch, device):
 
 
 def compute_loss(model, device, batch, alpha, beta):
-    input_values, labels,  mel_spectrogram = batch_values(batch, device)  #,
+    input_values, labels,  mel_spectrogram = batch_values(batch, device)  #
 
     #For small batch sizes where variance could be very low
     if labels[:, 0].std() < 1e-7 or labels[:, 1].std() < 1e-7:
@@ -309,7 +313,7 @@ def plot_gradients(gradients, layer_name):
 
 
 def train(model, device, train_dataloader, test_dataloader, \
-          epochs=3, alpha=0.55, beta=0.45, checkpoint_path = "model_checkpoint_sampled.pth", patience_es = 15):
+          epochs=3, alpha=0.5, beta=0.5, checkpoint_path = "custom_model.pth", patience_es = 15):
     """
     Train the model using CCC loss for valence and arousal.
     """
@@ -338,11 +342,11 @@ def train(model, device, train_dataloader, test_dataloader, \
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             log_gradient_norms(model, epoch)
-            gradients = get_gradients(model)
+            """gradients = get_gradients(model)
 
             for name, grad in gradients.items():
                 grad_norm = np.linalg.norm(grad)
-                #print(f"Gradient Norm for {name}: {grad_norm}")
+                #print(f"Gradient Norm for {name}: {grad_norm}")"""
 
             optimizer.step()
             loss = loss.item()
@@ -400,7 +404,7 @@ def validate(model, device, test_dataloader, alpha, beta):
     return avg_val_loss
 
 
-def plot_losses(train_losses, val_losses, filename = "./loss_plot_trial.png"):
+def plot_losses(train_losses, val_losses, filename = "plots/loss_plot_trial.png"):
     plt.figure(figsize=(10, 6))
     plt.plot(range(1, len(train_losses) + 1), train_losses, label='Training Loss', marker='o')
     plt.plot(range(1, len(val_losses) + 1), val_losses, label='Validation Loss', marker='o')
@@ -451,8 +455,8 @@ def main():
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
     model = EmotionModel(config).to(device)
 
-    muse = pd.read_pickle("../data/MuSe_sample").sample(frac=1, random_state=42)#.reset_index(drop=True)
-    iemocap = pd.read_pickle("../data/IEMOCAP_useful").sample(frac=1, random_state=42)
+    muse = pd.read_pickle("data/MuSe_sample").sample(frac=1, random_state=42)#.reset_index(drop=True)
+    iemocap = pd.read_pickle("data/IEMOCAP_useful").sample(frac=1, random_state=42)
 
     df = pd.concat([iemocap, muse]).sample(frac=1, random_state=42)
     
@@ -483,7 +487,7 @@ def main():
 
     summary(model)
     
-    train(model, device, train_dataloader, test_dataloader, epochs = 30)
+    train(model, device, train_dataloader, test_dataloader, epochs = 50)
 
 
 if __name__ == "__main__":
