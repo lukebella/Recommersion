@@ -42,7 +42,8 @@ class VocalAssistant:
             print(f"Error occurred: {e}")
         return command, wav_file
     
-    def process_audio_file(self, file_path: str):
+
+    def process_audio_file_str(self, file_path: str):
         # Initialize the recognizer
         command = ""
         audio = None
@@ -76,5 +77,5 @@ if __name__ == '__main__':
     vc = VocalAssistant(1)
     vc.talk("What is your mood today?")  # This will be skipped if running over SSH
     file_path = "happy.wav" 
-    audio = vc.process_audio_file(file_path)
+    audio = vc.process_audio_file_str(file_path)
     exit()

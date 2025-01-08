@@ -123,7 +123,7 @@ class EmotionDataset(Dataset):
         mel_spectrogram_stack = np.stack([mel_spectrogram, mel_spectrogram_derivative_1, mel_spectrogram_derivative_2], axis=0)
         print(mel_spectrogram_stack.shape)
 
-        return torch.tensor(mel_spectrogram_stack, dtype=torch.float32)#.permute(1, 0, 2)
+        return torch.tensor(mel_spectrogram_stack, dtype=torch.float32)
 
 
     
@@ -500,10 +500,10 @@ def predict_emotion(model, device, processor, wav_data):
     inputs = processor(wav_data, sampling_rate=16000, return_tensors="pt", padding = 'max_length', \
                                 truncation = True, max_length = 10*16000, do_normalize = True,\
                                 return_attention_mask = False)
-    
-    input_values = inputs['input_values'].squeeze(0).to(device)
-    mel_spectrogram = EmotionDataset.get_mel_spectrogram(input_values)
 
+    input_values = inputs['input_values'].to(device)
+    mel_spectrogram = EmotionDataset.get_mel_spectrogram(input_values).to(device)
+    mel_spectrogram = mel_spectrogram.permute(1,0,2,3)
 
     with torch.no_grad():
         _, outputs = model(input_values=input_values, mel_spectrogram=mel_spectrogram)
