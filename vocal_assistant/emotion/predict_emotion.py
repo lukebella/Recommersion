@@ -16,6 +16,7 @@ import numpy as np
 import torchaudio
 import random
 import librosa
+from sklearn.model_selection import KFold
 
 
 class AudioAugmentation:
@@ -57,7 +58,7 @@ class EmotionDataset(Dataset):
         self.processor = processor
         self.augmenter = augmenter
         self.sample_rate = 16000
-        self.max_seconds = 6  #max padding seconds
+        self.max_seconds = 10  #max padding seconds
         self.threshold = 0.8  #max percentage of which files to keep
         self.attention_mask = attention_mask
 
@@ -103,20 +104,25 @@ class EmotionDataset(Dataset):
         
         return wav_data.numpy() if isinstance(wav_data, torch.Tensor) else wav_data
     
-    
-    def get_mel_spectrogram(self, input_values):
-        mel_spectrogram = librosa.feature.melspectrogram(y=input_values.numpy(), sr=self.sample_rate, n_mels=40,)
+
+    @staticmethod
+    def get_mel_spectrogram(input_values):
+        #hop_length = int(0.012 * self.sample_rate)  
+        #win_length = int(0.026 * self.sample_rate)  
+        mel_spectrogram = librosa.feature.melspectrogram(y=input_values.numpy(), sr=16000, n_mels=40, fmax=8000)
+        
         mel_spectrogram = librosa.power_to_db(mel_spectrogram, ref=np.max)
         mel_spectrogram_derivative_1 = librosa.feature.delta(mel_spectrogram, order=1)
         mel_spectrogram_derivative_2 = librosa.feature.delta(mel_spectrogram, order=2)
 
-        # Stack the original spectrogram and the derivatives to form the final input
+    
+        mel_spectrogram = librosa.util.normalize(mel_spectrogram)
+        mel_spectrogram_derivative_1 = librosa.util.normalize(mel_spectrogram_derivative_1)
+        mel_spectrogram_derivative_2 = librosa.util.normalize(mel_spectrogram_derivative_2)
+
         mel_spectrogram_stack = np.stack([mel_spectrogram, mel_spectrogram_derivative_1, mel_spectrogram_derivative_2], axis=0)
+        print(mel_spectrogram_stack.shape)
 
-        # Normalize the stacked spectrogram
-        mel_spectrogram_stack = (mel_spectrogram_stack - np.mean(mel_spectrogram_stack)) / np.std(mel_spectrogram_stack)
-
-        # Ensure the shape is [3, 40, 600] for the CNN input
         return torch.tensor(mel_spectrogram_stack, dtype=torch.float32)#.permute(1, 0, 2)
 
 
@@ -128,10 +134,10 @@ class EmotionDataset(Dataset):
         
         max_length = self.sample_rate * self.max_seconds
 
-        if len(wav_data) > max_length / self.threshold:
+        if len(wav_data) > max_length/ self.threshold:
             return self.__getitem__((idx + 1) % len(self.df))
         
-        wav_data = self.normalize_waveform(wav_data)
+        #wav_data = self.normalize_waveform(wav_data)
         #wav_data = self.only_vocals(wav_data)
         """rand_augmenter = int(random.random()*1000)
 
@@ -142,16 +148,17 @@ class EmotionDataset(Dataset):
                                 truncation = True, max_length = max_length, do_normalize = True,\
                                 return_attention_mask = self.attention_mask)
         
-        #print(inputs)
+        #print(inputs['input_values'])
         input_values = inputs['input_values'].squeeze(0)
 
         inputs['input_values'] = input_values
-        inputs['mel_spectrogram'] = self.get_mel_spectrogram(input_values)
+        inputs['mel_spectrogram'] = EmotionDataset.get_mel_spectrogram(input_values)
+        #print("MEL SIZE",inputs['mel_spectrogram'].size())
+
         inputs['labels'] = torch.tensor([valence, arousal], dtype=torch.float32)
 
 
         return inputs
-
 
     
 class EmotionModel(Wav2Vec2PreTrainedModel):
@@ -168,7 +175,7 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         
         for param in self.wav2vec2.feature_projection.parameters():
             param.requires_grad = False
-
+        
         # Allow fine-tuning of transformer layers
         for param in self.wav2vec2.encoder.parameters():
             param.requires_grad = True
@@ -187,13 +194,12 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
             nn.Flatten()
         )
 
-        self.rnn = nn.LSTM(input_size= 4528, hidden_size=config.hidden_size, num_layers=2, \
+        self.rnn = nn.LSTM(input_size= 7008, hidden_size=config.hidden_size, num_layers=2, \
                            batch_first=True, bidirectional=True, dropout=0.3)
         
-              
-        self.dropout = nn.Dropout(config.final_dropout)
+        self.dropout = nn.Dropout(0.5)
         self.regressor = nn.Linear(config.hidden_size*2, config.num_labels)
-        #self.act = nn.Tanh()
+        #self.act = nn.ReLU()
 
         self.init_weights()
 
@@ -210,11 +216,14 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
     
 
         # Combine features
+        # print(mel_features.size())
+        # print(hidden_states.size())
         combined_features = torch.cat((hidden_states, mel_features), dim=1)
         #print(combined_features.size())
-        combined_features = self.dropout(combined_features)
+        #combined_features = self.dropout(combined_features)
         temp,_ = self.rnn(combined_features)
-        temp = self.dropout(temp)
+        #temp = self.dropout(temp)
+        #temp = self.act(temp)
         logits = self.regressor(temp)
         
         return hidden_states, logits
@@ -291,7 +300,7 @@ def compute_loss(model, device, batch, alpha, beta):
     # Weighted total loss
     loss = alpha * loss_val + beta * loss_ar
     print(f"Loss (valence): {loss_val.item()}, Loss (arousal): {loss_ar.item()}, Total: {loss.item()}")
-    return loss
+    return loss, loss_val, loss_ar
 
 
 def get_gradients(model):
@@ -323,8 +332,8 @@ def train(model, device, train_dataloader, test_dataloader, \
     val_losses = []
     best_val_loss = float("inf")
     no_improvement_epochs = 0
-    optimizer = AdamW(model.parameters(), lr=1e-5, weight_decay=1e-2)
-    scheduler = OneCycleLR(optimizer, max_lr=5e-5, steps_per_epoch=len(train_dataloader), epochs=10)
+    optimizer = AdamW(model.parameters(), lr=1e-5, weight_decay=1e-3)
+    scheduler = OneCycleLR(optimizer, max_lr=1e-4, steps_per_epoch=len(train_dataloader), epochs=10)
 
     for epoch in range(epochs):
         model.train()
@@ -335,7 +344,7 @@ def train(model, device, train_dataloader, test_dataloader, \
 
             optimizer.zero_grad()
            
-            loss = compute_loss(model, device, batch, alpha, beta)
+            loss, _, _ = compute_loss(model, device, batch, alpha, beta)
             if loss is None: continue 
 
             # Backpropagation
@@ -346,12 +355,12 @@ def train(model, device, train_dataloader, test_dataloader, \
 
             for name, grad in gradients.items():
                 grad_norm = np.linalg.norm(grad)
-                #print(f"Gradient Norm for {name}: {grad_norm}")"""
+                print(f"Gradient Norm for {name}: {grad_norm}")"""
 
             optimizer.step()
             loss = loss.item()
             epoch_loss += loss
-
+        
         avg_epoch_loss = epoch_loss / len(train_dataloader)
         train_losses.append(avg_epoch_loss)
 
@@ -384,6 +393,51 @@ def train(model, device, train_dataloader, test_dataloader, \
     writer.close()
     plot_losses(train_losses, val_losses)
 
+#CV
+def cross_validate_alpha_beta(device, dataset, alpha_beta_values, config, k=5, epochs=12):
+   
+    kfold = KFold(n_splits=k, shuffle=True, random_state=42)
+    results = {}
+
+    for alpha, beta in alpha_beta_values:
+        print(f"Testing alpha={alpha}, beta={beta}")
+        fold_losses = []
+
+        for train_idx, val_idx in kfold.split(dataset):
+            train_subset = torch.utils.data.Subset(dataset, train_idx)
+            val_subset = torch.utils.data.Subset(dataset, val_idx)
+
+            train_loader = DataLoader(train_subset, batch_size=32, shuffle=True)
+            val_loader = DataLoader(val_subset, batch_size=32, shuffle=False)
+
+            # Reinitialize model and optimizer for each fold
+            model = EmotionModel(config).to(device)
+            optimizer = AdamW(model.parameters(), lr=1e-6, weight_decay=1e-2)
+
+            for epoch in range(epochs):
+                # Training loop
+                model.train()
+                for batch in train_loader:
+                    optimizer.zero_grad()
+                    loss = compute_loss(model, device, batch, alpha, beta)
+                    if loss is None: continue
+                    loss.backward()
+                    optimizer.step()
+
+                # Validation loop
+                val_loss = validate(model, device, val_loader, alpha, beta)
+                fold_losses.append(val_loss)
+
+        # Store the mean validation loss for the parameter combination
+        mean_loss = sum(fold_losses) / len(fold_losses)
+        results[(alpha, beta)] = mean_loss
+        print(f"Mean Validation Loss for alpha={alpha}, beta={beta}: {mean_loss}")
+
+    # Find the best alpha and beta
+    best_params = min(results, key=results.get)
+    print(f"Best alpha, beta combination: {best_params} with Loss: {results[best_params]}")
+    return best_params
+
 
 # Validation Loop
 def validate(model, device, test_dataloader, alpha, beta):
@@ -393,13 +447,19 @@ def validate(model, device, test_dataloader, alpha, beta):
     print("****VALIDATION****")
     with torch.no_grad():
         for batch in tqdm(test_dataloader):
-            loss = compute_loss(model, device, batch, alpha, beta)
+            loss, loss_val, loss_ar = compute_loss(model, device, batch, alpha, beta)
             if loss is None: continue
 
             val_loss += loss.item()
+            val_loss_val += loss_val.item()
+            val_loss_ar += loss_ar.item()
 
     # Average CCC scores
     avg_val_loss = val_loss / len(test_dataloader)
+    avg_val_loss_val = val_loss_val / len(test_dataloader)
+    avg_val_loss_ar = val_loss_ar / len(test_dataloader)
+
+    #TODO print best valence and arousal losses
     print(f"Validation Loss: {avg_val_loss}")
     return avg_val_loss
 
@@ -437,13 +497,19 @@ def load_trained_model(device, checkpoint_path, pretrained_model):
 
 def predict_emotion(model, device, processor, wav_data):
     model.eval()
-    inputs = processor(wav_data, sampling_rate=16000, return_tensors="pt", padding=True)
-    input_values = inputs['input_values'].to(device)
+    inputs = processor(wav_data, sampling_rate=16000, return_tensors="pt", padding = 'max_length', \
+                                truncation = True, max_length = 10*16000, do_normalize = True,\
+                                return_attention_mask = False)
+    
+    input_values = inputs['input_values'].squeeze(0).to(device)
+    mel_spectrogram = EmotionDataset.get_mel_spectrogram(input_values)
+
 
     with torch.no_grad():
-        outputs = model(input_values=input_values)
+        _, outputs = model(input_values=input_values, mel_spectrogram=mel_spectrogram)
+
     
-    return outputs[1]
+    return outputs#[1]
 
 
 
@@ -453,7 +519,6 @@ def main():
     pretrained_model = "facebook/wav2vec2-base"    #patrickvonplaten/wav2vec2_tiny_random_robust" #w2v2-L-robust-12
     processor = Wav2Vec2Processor.from_pretrained(pretrained_model, attn_implementation="flash_attention_2")
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
-    model = EmotionModel(config).to(device)
 
     muse = pd.read_pickle("data/MuSe_sample").sample(frac=1, random_state=42)#.reset_index(drop=True)
     iemocap = pd.read_pickle("data/IEMOCAP_useful").sample(frac=1, random_state=42)
@@ -480,14 +545,18 @@ def main():
     train_dataset = EmotionDataset(train_df, processor, augmenter, att_mask)
     test_dataset = EmotionDataset(test_df, processor, augmenter, att_mask)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True,\
+    train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True,\
                                 num_workers=4, pin_memory=True, drop_last = True, )
-    test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=True,\
+    test_dataloader = DataLoader(test_dataset, batch_size=16, shuffle=True,\
                                 num_workers=4, pin_memory=True, drop_last = True,)
 
-    summary(model)
     
-    train(model, device, train_dataloader, test_dataloader, epochs = 50)
+    #alpha_beta_values = [(a, 1 - a) for a in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]]
+    #best_alpha, best_beta = cross_validate_alpha_beta(device, train_dataset, alpha_beta_values, config)
+
+    model = EmotionModel(config).to(device)
+    summary(model)
+    train(model, device, train_dataloader, test_dataloader, epochs = 50)#, alpha = best_alpha, beta = best_beta)
 
 
 if __name__ == "__main__":
