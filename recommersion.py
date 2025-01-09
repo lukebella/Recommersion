@@ -7,8 +7,10 @@ from vocal_assistant.emotion.emotion_model import process_func
 import pandas as pd
 import numpy as np
 import threading
-import dask.dataframe as dd
 import pickle
+from pathlib import Path
+import sounddevice as sd
+
 
 class Functions:
     def __init__(self, callback):
@@ -19,11 +21,12 @@ class Functions:
     def load_data(self):
         self.device = return_device()
         self.audeering_model_name = 'audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'
-        self.custom_model_name = "model_checkpoint_sampled.pth"
+        self.custom_model_name = "custom_model.pth"
         self.pretrained_model = "facebook/wav2vec2-base"
         self.custom_model, self.custom_processor = load_trained_model(self.device, \
-                                                                      self.audeering_model_name, self.pretrained_model)
-        self.custom = False
+                                                                      self.custom_model_name, self.pretrained_model)
+        self.custom = True if Path(self.custom_model_name).exists() else False
+        print("self.custom,",self.custom)
         with open("./data/Songs", "rb") as f:
             self.data = pickle.load(f)
         print("Songs loaded!")
@@ -55,7 +58,7 @@ class Recommersion:
     def __init__(self, root):
         self.root = root
         self.root.title("Recommersion - Emotion-Based Music Recommendation")
-        self.root.geometry("600x600")
+        self.root.geometry("800x800")
         self.root.resizable(False, False)
         
         self.create_widgets()
@@ -71,7 +74,7 @@ class Recommersion:
     def on_data_loaded(self):
         # Remove loading message
         self.loading_label.pack_forget()
-        self.create_widgets()
+        #self.create_widgets()
         messagebox.showinfo("Data Loaded", "Songs dataset loaded successfully!")
 
     def create_widgets(self):
@@ -108,8 +111,10 @@ class Recommersion:
     def create_playlist_frame(self):
         playlist_frame = ttk.LabelFrame(self.root, text="Playlist")
         playlist_frame.pack(pady=10, padx=10, fill="both", expand="yes")
-        self.playlist_label = ttk.Label(playlist_frame, text="Playlist will be displayed here", padding=10)
-        self.playlist_label.pack()
+        
+        self.playlist_label = tk.Listbox(playlist_frame, selectmode=tk.SINGLE, width=40, height=8)
+        self.playlist_label.pack(padx=10, pady=10, fill="both", expand=True)
+        self.playlist_label.bind('<<ListboxSelect>>', self.select_song)
 
     def create_controls_frame(self):
         controls_frame = ttk.LabelFrame(self.root, text="Playback Controls")
@@ -133,22 +138,27 @@ class Recommersion:
         speech_array = self.functions.process_audio_file(speech)
         dimensional = self.functions.predict_valence_arousal(speech_array)
         print(dimensional)
-        self.valence_slider.set(dimensional[0]*self.valence_slider.cget("to"))
-        self.arousal_slider.set(dimensional[1]*self.valence_slider.cget("to"))
+        print("before setting")
+        self.root.after(0, lambda: self.valence_slider.set(dimensional[0] * self.valence_slider.cget("to")))
+        self.root.after(0, lambda: self.arousal_slider.set(dimensional[1] * self.arousal_slider.cget("to")))
+        print("after setting")
         playlist = self.functions.generate_playlist(dimensional)
-        self.update_playlist(playlist)
+        print(playlist)
+        self.root.after(0, lambda: self.update_playlist(playlist))
+
 
     def update_playlist(self, playlist):
-        self.playlist_box.delete(0, tk.END)
-        self.current_playlist = playlist
+        self.playlist_label.delete(0, tk.END)  # Clear existing items
+        self.current_playlist = playlist  # Save playlist for further use
         for idx, song in playlist.iterrows():
-            self.playlist_box.insert(tk.END, f"{song['title']} - {song['artist']}")
+            self.playlist_label.insert(tk.END, f"{song['title']} - {song['artist']}")
 
     def select_song(self, event):
-        selection = self.playlist_box.curselection()
+        selection = self.playlist_label.curselection()
         if selection:
             song = self.current_playlist.iloc[selection[0]]
             messagebox.showinfo("Playing", f"Playing {song['title']} by {song['artist']}")
+            sd.play(song['mp3_file'], 44100)  # Play the MP3 file
     
 
     def generate_playlist_from_text(self):

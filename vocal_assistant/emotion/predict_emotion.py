@@ -11,13 +11,13 @@ from sklearn.model_selection import train_test_split
 from torchinfo import summary
 import matplotlib.pyplot as plt
 from torchmetrics.regression import ConcordanceCorrCoef
-from torch.utils.tensorboard import SummaryWriter
+#from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 import torchaudio
 import random
 import librosa
 from sklearn.model_selection import KFold
-
+from pathlib import Path
 
 class AudioAugmentation:
     def __init__(self, sample_rate=16000, noise_level=0.005, time_mask_param=30, freq_mask_param=15):
@@ -121,7 +121,6 @@ class EmotionDataset(Dataset):
         mel_spectrogram_derivative_2 = librosa.util.normalize(mel_spectrogram_derivative_2)
 
         mel_spectrogram_stack = np.stack([mel_spectrogram, mel_spectrogram_derivative_1, mel_spectrogram_derivative_2], axis=0)
-        print(mel_spectrogram_stack.shape)
 
         return torch.tensor(mel_spectrogram_stack, dtype=torch.float32)
 
@@ -229,14 +228,14 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         return hidden_states, logits
 
 
-writer = SummaryWriter("runs/emotion_model")
+#writer = SummaryWriter("runs/emotion_model")
 
 def log_embedding_norms(model, epoch):
     """ Log the L2 norm degli embedding del modello."""
     for name, param in model.named_parameters():
         if "wav2vec2.encoder" in name and param.requires_grad:
             embedding_norm = param.norm(2).item()
-            writer.add_scalar(f"Embedding Norm/{name}", embedding_norm, epoch)
+            #writer.add_scalar(f"Embedding Norm/{name}", embedding_norm, epoch)
 
 
 def log_gradient_norms(model, epoch):
@@ -244,7 +243,7 @@ def log_gradient_norms(model, epoch):
     for name, param in model.named_parameters():
         if param.grad is not None:
             grad_norm = param.grad.norm(2).item()
-            writer.add_scalar(f"Gradient Norm/{name}", grad_norm, epoch)
+            #.add_scalar(f"Gradient Norm/{name}", grad_norm, epoch)
 
 
 def save_checkpoint(model, optimizer, epoch, filename):
@@ -365,12 +364,12 @@ def train(model, device, train_dataloader, test_dataloader, \
         train_losses.append(avg_epoch_loss)
 
         print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {avg_epoch_loss}")
-        writer.add_scalar("Loss/Train", avg_epoch_loss, epoch)
+        #writer.add_scalar("Loss/Train", avg_epoch_loss, epoch)
         log_embedding_norms(model, epoch)
 
         # Validation Loop
         val_loss = validate(model, device, test_dataloader, alpha, beta)
-        writer.add_scalar("Loss/Validation", val_loss, epoch)
+        #writer.add_scalar("Loss/Validation", val_loss, epoch)
         val_losses.append(val_loss)
         # Check if validation loss improved
         if val_loss < best_val_loss:
@@ -390,7 +389,7 @@ def train(model, device, train_dataloader, test_dataloader, \
         plot_losses(train_losses, val_losses)
         scheduler.step(val_loss)
 
-    writer.close()
+    #writer.close()
     plot_losses(train_losses, val_losses)
 
 #CV
@@ -484,8 +483,8 @@ def load_trained_model(device, checkpoint_path, pretrained_model):
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
     model = EmotionModel(config).to(device)
     processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
-    
-    if os.path.isfile(checkpoint_path):
+    print(checkpoint_path)
+    if Path(checkpoint_path).exists():
         checkpoint = torch.load(checkpoint_path, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         print("Loaded trained model from checkpoint.")
