@@ -12,6 +12,8 @@ from pathlib import Path
 import sounddevice as sd
 import time
 import pygame
+import sys
+
 
 class Functions:
     def __init__(self, callback):
@@ -67,15 +69,17 @@ class Recommersion:
     def __init__(self, root):
         self.root = root
         self.root.title("Recommersion - Emotion-Based Music Recommendation")
-        self.root.geometry("800x700")
+        self.root.geometry("800x800")
         self.root.resizable(False, False)
 
         self.mixer = pygame.mixer
         self.mixer.init()
         self.mixer.music.set_volume(0.5)
+        self.NEXT = pygame.USEREVENT + 1
+        self.mixer.music.set_endevent(self.NEXT) 
 
-        self.current_song = ""
-        self.paused = False
+        self.current_song = pd.DataFrame([])
+        self.paused = True
 
         
         self.create_widgets()
@@ -87,6 +91,17 @@ class Recommersion:
         self.functions = None
         self.data_loaded = False
         self.initialize_functions()
+        self.running = True
+        self.event_thread = threading.Thread(target=self.handle_pygame_events, daemon=True)
+        self.event_thread.start()
+
+
+    def handle_pygame_events(self):
+        while self.running:
+            if (not self.mixer.music.get_busy()) and (self.mixer.music.get_endevent() == self.NEXT) and not self.paused:
+                    self.next_song()
+                    print("Next Song")
+            time.sleep(0.5)  
 
     def initialize_functions(self):
         self.functions = Functions(self.on_data_loaded)
@@ -152,7 +167,7 @@ class Recommersion:
         controls_frame = ttk.LabelFrame(self.root, text="Playback Controls")
         controls_frame.pack(pady=10, padx=10, fill="both", expand="yes")
 
-        ttk.Button(controls_frame, text="▷ Play", command=self.play_song).grid(row=0, column=0, padx=10, pady=10)
+        ttk.Button(controls_frame, text="▷ Play", command=self.play_button).grid(row=0, column=0, padx=10, pady=10)
         ttk.Button(controls_frame, text="⏸️ Pause", command=self.pause_song).grid(row=0, column=1, padx=10, pady=10)
         ttk.Button(controls_frame, text="⏮ Prev", command=self.previous_song).grid(row=0, column=2, padx=10, pady=10)
         ttk.Button(controls_frame, text="Next ⏭", command=self.next_song).grid(row=0, column=3, padx=10, pady=10)
@@ -179,6 +194,7 @@ class Recommersion:
             playlist = self.functions.generate_playlist(dimensional)
             print(playlist)
             self.root.after(0, lambda: self.update_playlist(playlist))
+            self.running = True
         else:
             messagebox.showinfo("Microphone", "No songs to compute yet")
 
@@ -203,19 +219,25 @@ class Recommersion:
             print(valence, arousal)
             playlist = self.functions.generate_playlist([valence, arousal])
             print(playlist)
-            self.root.after(0, lambda :self.update_playlist(playlist))
             messagebox.showinfo("Adjusting Recommendation", f"Adjusting playlist with valence {valence} and arousal {arousal}")
+            self.root.after(0, lambda :self.update_playlist(playlist))
+            self.running = True
         else:
             messagebox.showinfo("Recompute playlist", "No songs to compute yet")
 
 
     def _play(self, song):
         self.mixer.music.load(song['mp3_path'])
-        self.mixer.music.play(fade_ms=100)
+        self.mixer.music.play(fade_ms=200)
     
 
     def play_in_the_box(self, event):
         return self.play_song()
+    
+
+    def play_button(self):
+        if not (self.mixer.music.get_busy()):
+            self.play_song()
 
 
     def play_song(self):
@@ -226,42 +248,70 @@ class Recommersion:
             
         else:
             self.mixer.music.unpause()
-            paused = False
+            self.paused = False
 
 
     def pause_song(self):
         self.mixer.music.pause()
         self.paused = True
 
-#TODO: manage properly these funcitons below
+
     def next_song(self):
         selection = self.playlist_label.curselection()
         next = selection[0]+1
         if next < len(self.current_playlist):
             self.current_song = self.current_playlist.iloc[selection[0]+1]
-            #self.playlist_label.select_clear(0, "END")
+            self.playlist_label.select_clear(0, tk.END)
             self.playlist_label.selection_set(next)
             self.paused = False
-            self._play(self.current_song)
+            self.play_song()
+        else:
+            self.running = False
 
         
     def previous_song(self):
         selection = self.playlist_label.curselection()
         prev = selection[0]-1
-        if prev > 0:
+        if prev >= 0:
             self.current_song = self.current_playlist.iloc[selection[0]-1]
-            #self.playlist_label.select_clear(0, end)
+            self.playlist_label.select_clear(0, tk.END)
             self.playlist_label.selection_set(prev)
             self.paused = False
-            self._play(self.current_song)
-
+            self.play_song()
+        else:
+            self.running = False    
 
     def manage_volume(self, event):
         self.mixer.music.set_volume(self.volume_slider.get()/100)
 
+    def fade_out_and_exit(self):
+        print("Performing fade-out before exit...")
+        root.stop_threads()
+        self.mixer.music.fadeout(300)  
+        self.time.wait(300)  
+        self.mixer.quit()  
+
+
+    def __del__(self):
+        self.fade_out_and_exit()
+
+
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    root.option_add("*Font", "Arial 12")
-    app = Recommersion(root)
-    root.mainloop()
+    try:
+        while True:
+            root = tk.Tk()
+            root.option_add("*Font", "Arial 12")
+            app = Recommersion(root)
+            root.mainloop()
+
+    except KeyboardInterrupt:
+        print("KeyboardInterrupt received. Exiting gracefully...")
+        root.stop_threads()
+        sys.exit(0)
+    except SystemExit:
+        print("SystemExit received. Performing cleanup...")
+        root.stop_threads()
+        sys.exit(0)
+
+
