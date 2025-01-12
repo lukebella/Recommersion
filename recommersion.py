@@ -9,7 +9,6 @@ import numpy as np
 import threading
 import pickle
 from pathlib import Path
-import sounddevice as sd
 import time
 import pygame
 import sys
@@ -91,17 +90,17 @@ class Recommersion:
         self.functions = None
         self.data_loaded = False
         self.initialize_functions()
-        self.running = True
-        self.event_thread = threading.Thread(target=self.handle_pygame_events, daemon=True)
-        self.event_thread.start()
+        self.playlist_initialized = False
+        self.poll_pygame_events()
+            
 
+    def poll_pygame_events(self):
+        """Poll for pygame mixer events and handle them."""
+        if self.playlist_initialized:
+            if not self.mixer.music.get_busy() and not self.paused:
+                self.next_song()
+        self.root.after(300, self.poll_pygame_events)
 
-    def handle_pygame_events(self):
-        while self.running:
-            if (not self.mixer.music.get_busy()) and (self.mixer.music.get_endevent() == self.NEXT) and not self.paused:
-                    self.next_song()
-                    print("Next Song")
-            time.sleep(0.5)  
 
     def initialize_functions(self):
         self.functions = Functions(self.on_data_loaded)
@@ -182,6 +181,7 @@ class Recommersion:
     def start_microphone(self):
         if self.data_loaded:
             messagebox.showinfo("Microphone", "Microphone started! Please speak.")
+            self.pause_song()
             command, speech = self.functions.start_microphone()
             self.text_label.config(text=command) 
             speech_array = self.functions.process_audio_file(speech)
@@ -194,7 +194,6 @@ class Recommersion:
             playlist = self.functions.generate_playlist(dimensional)
             print(playlist)
             self.root.after(0, lambda: self.update_playlist(playlist))
-            self.running = True
         else:
             messagebox.showinfo("Microphone", "No songs to compute yet")
 
@@ -208,8 +207,8 @@ class Recommersion:
         self.playlist_label.selection_set(0)
         self.current_song = self.current_playlist.iloc[self.playlist_label.curselection()[0]]
         self.paused = False
+        self.playlist_initialized = True  # Set the flag here
         self.play_song()
-
     
 
     def adjust_recommendation(self):
@@ -221,7 +220,6 @@ class Recommersion:
             print(playlist)
             messagebox.showinfo("Adjusting Recommendation", f"Adjusting playlist with valence {valence} and arousal {arousal}")
             self.root.after(0, lambda :self.update_playlist(playlist))
-            self.running = True
         else:
             messagebox.showinfo("Recompute playlist", "No songs to compute yet")
 
@@ -266,7 +264,7 @@ class Recommersion:
             self.paused = False
             self.play_song()
         else:
-            self.running = False
+            self.playlist_initialized = False
 
         
     def previous_song(self):
@@ -278,8 +276,7 @@ class Recommersion:
             self.playlist_label.selection_set(prev)
             self.paused = False
             self.play_song()
-        else:
-            self.running = False    
+
 
     def manage_volume(self, event):
         self.mixer.music.set_volume(self.volume_slider.get()/100)

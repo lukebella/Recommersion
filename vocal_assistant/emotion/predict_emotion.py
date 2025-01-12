@@ -485,7 +485,7 @@ def load_trained_model(device, checkpoint_path, pretrained_model):
     processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
     print(checkpoint_path)
     if Path(checkpoint_path).exists():
-        checkpoint = torch.load(checkpoint_path, map_location=device)
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
         model.load_state_dict(checkpoint['model_state_dict'])
         print("Loaded trained model from checkpoint.")
     else:
