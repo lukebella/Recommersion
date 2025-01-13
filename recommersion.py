@@ -8,7 +8,6 @@ import pandas as pd
 import numpy as np
 import threading
 import pickle
-from pathlib import Path
 import time
 import pygame
 import sys
@@ -18,26 +17,25 @@ class Functions:
     def __init__(self, callback):
         self.callback = callback
         self.vc = VocalAssistant(1)
-        self.audeering_model_name = 'audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim'
-        self.custom_model_name = "custom_model.pth"
-        self.pretrained_model = "facebook/wav2vec2-base"
-        threading.Thread(target=self.load_data).start()
         
-    
+        self.custom_model_name = "custom_model.pth"
+        self.custom_pretrained_model = "facebook/wav2vec2-base"
+
+        threading.Thread(target=self.load_data).start()
+
+        
     def get_model_from_name(self, name):
-        d = {"Audeering": self.audeering_model_name,
-             "Custom": self.custom_model_name}
-        return d[name]
+        if name in self.d:
+            return self.d[name]
+        else:
+            raise ValueError(f"Unknown model name: {name}")
 
 
     def load_data(self):
         self.device = return_device()
         self.custom_model, self.custom_processor = load_trained_model(self.device, \
-                                                                      self.custom_model_name, self.pretrained_model)
+                                                                      self.custom_model_name, self.custom_pretrained_model)
         
-        self.custom = True if Path(self.custom_model_name).exists() else False
-        print("self.custom,",self.custom)
-
         with open("./data/Songs_path", "rb") as f:
             self.data = pickle.load(f)
         print("Songs loaded!")
@@ -51,9 +49,15 @@ class Functions:
     def process_audio_file(self, file):
         return self.vc.process_audio_file(file)
     
-    def predict_valence_arousal(self, file):
-        return predict_emotion(self.custom_model, self.device, self.custom_processor, file)[0].tolist() if self.custom else \
-               process_func(file, 16000)[0][:2]
+
+    def predict_valence_arousal(self, file, model):
+        print("Using model:", model)
+        d = {
+            "Audeering": process_func(file, 16000)[0][:2],
+            "Custom": predict_emotion(self.custom_model, self.device, self.custom_processor, file)[0].tolist()
+        }
+        return d[model]
+       
     
     def generate_playlist(self, dimensional, cut = 10):
         songs_list = pd.DataFrame({"id": self.data["musicId"], "eucl_dist":self.data[["Valence", "Arousal"]]\
@@ -97,7 +101,7 @@ class Recommersion:
     def poll_pygame_events(self):
         """Poll for pygame mixer events and handle them."""
         if self.playlist_initialized:
-            if not self.mixer.music.get_busy() and not self.paused:
+            if not (self.mixer.music.get_busy() or self.paused):
                 self.next_song()
         self.root.after(300, self.poll_pygame_events)
 
@@ -120,24 +124,63 @@ class Recommersion:
         self.create_controls_frame()
 
 
+
     def create_input_frame(self):
         input_frame = ttk.LabelFrame(self.root, text="Input Emotion")
-        input_frame.pack(pady=10, padx=10, fill="both", expand="yes")
-        
-        ttk.Button(input_frame, text="🎤 Speak Emotion", command=self.start_microphone).grid(row=0, column=0, padx=10, pady=10)
-        
-        self.text_label= ttk.Label(input_frame, text="Your speech text:", font=("Arial", 16), width=100)
-        self.text_label.grid(row=0, column=1, padx=10, pady=10)
+        input_frame.pack(pady=10, padx=10, fill="both", expand=True)
 
-        #TODO: fix it
-        OPTIONS = [
-                    "Audeering",
-                    "Custom"
-                ] 
-        self.model = tk.StringVar()
-        self.model.set(OPTIONS[0])
-        self.menu = ttk.OptionMenu(input_frame, self.model, *OPTIONS)
-        self.menu.grid(row=0, column=1, padx=10, pady=10)
+        ttk.Button(input_frame, text="🎤 Speak Emotion", command=self.start_microphone).grid(
+            row=0, column=0, padx=10, pady=10, sticky="w"
+        )
+
+        self.text_label = ttk.Label(input_frame, text="Your speech text:", font=("Arial", 16), anchor="w")
+        self.text_label.grid(row=0, column=1, padx=10, pady=10, sticky="w")
+
+        self.model_label = ttk.Label(input_frame, text="Model:", font=("Arial", 16), anchor="w")
+        self.model_label.grid(row=1, column=0, padx=10, pady=10, sticky="w")
+
+        self.MODEL_OPTIONS = ["Audeering", "Custom"]
+        self.model = tk.StringVar(value=self.MODEL_OPTIONS[0])  # Set the default selection
+        self.menu = ttk.OptionMenu(input_frame, self.model, *self.MODEL_OPTIONS)
+        self.menu.grid(row=1, column=1, padx=10, pady=10, sticky="w")
+        self.model.trace_add("write", self.on_option_change)
+
+        self.cut_label = ttk.Label(input_frame, text="Number of Songs:", font=("Arial", 16), anchor="w")
+        self.cut_label.grid(row=2, column=0, padx=10, pady=10, sticky="w")
+
+        self.cut_text = tk.StringVar(value="10")  # Default value
+        self.cut = ttk.Entry(input_frame, textvariable=self.cut_text, width=10)
+        self.cut.grid(row=2, column=1, padx=10, pady=10, sticky="w")
+        self.cut_text.trace_add("write", self.on_text_change)
+
+        input_frame.grid_rowconfigure(3, weight=1)
+        input_frame.grid_columnconfigure(2, weight=1)
+
+        self.root.after(2000, self.update_options)
+        self.root.after(2000, self.update_text)
+
+
+    def on_text_change(self, *args):
+        print(f"Current text in Entry: {self.cut_text.get()}")
+
+    def update_text(self):
+        self.cut_text.set(self.cut_text.get())
+
+
+    def on_option_change(self, *args):
+        print(f"Selected option: {self.model.get()}")
+
+
+    def update_options(self):
+        
+        menu = self.menu["menu"]
+        menu.delete(0, "end")  
+        
+        for option in self.MODEL_OPTIONS:
+            menu.add_command(label=option, command=lambda value=option: self.model.set(value))
+
+        if self.model.get() not in self.MODEL_OPTIONS:
+            self.model.set(self.OPTIONS[0])
         
 
     def create_adjustment_frame(self):
@@ -175,7 +218,14 @@ class Recommersion:
         self.volume_slider = Scale(controls_frame, from_=0, to=100, orient="horizontal", length=200, command = self.manage_volume)
         self.volume_slider.set(50)
         self.volume_slider.grid(row=1, column=1, columnspan=3, padx=10, pady=10)
-
+    
+    def check_cut(self, cut:str):
+        if cut.isdigit() and int(cut)>0 and int(cut)<len(self.functions.data):
+            return int(cut)
+        else:
+            messagebox.showinfo("Value Error", "Set a positive integer type greater than zero or a minor number!")
+            return None
+            
 
     # Placeholder methods for functionalities
     def start_microphone(self):
@@ -185,13 +235,17 @@ class Recommersion:
             command, speech = self.functions.start_microphone()
             self.text_label.config(text=command) 
             speech_array = self.functions.process_audio_file(speech)
-            dimensional = self.functions.predict_valence_arousal(speech_array)
+            dimensional = self.functions.predict_valence_arousal(file = speech_array, \
+                                                                 model = self.model.get())
             print(dimensional)
             print("before setting")
             self.root.after(0, lambda: self.valence_slider.set(dimensional[0] * self.valence_slider.cget("to")))
             self.root.after(0, lambda: self.arousal_slider.set(dimensional[1] * self.arousal_slider.cget("to")))
             print("after setting")
-            playlist = self.functions.generate_playlist(dimensional)
+            cut = self.check_cut(self.cut_text.get())
+            if cut is None:
+                return
+            playlist = self.functions.generate_playlist(dimensional = dimensional, cut = cut)
             print(playlist)
             self.root.after(0, lambda: self.update_playlist(playlist))
         else:
@@ -216,7 +270,10 @@ class Recommersion:
             valence = self.valence_slider.get() / self.valence_slider.cget("to")
             arousal = self.arousal_slider.get() / self.valence_slider.cget("to")
             print(valence, arousal)
-            playlist = self.functions.generate_playlist([valence, arousal])
+            cut = self.check_cut(self.cut_text.get())
+            if cut is None:
+                return
+            playlist = self.functions.generate_playlist(dimensional = [valence, arousal], cut = cut)
             print(playlist)
             messagebox.showinfo("Adjusting Recommendation", f"Adjusting playlist with valence {valence} and arousal {arousal}")
             self.root.after(0, lambda :self.update_playlist(playlist))

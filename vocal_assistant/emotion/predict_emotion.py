@@ -507,8 +507,8 @@ def predict_emotion(model, device, processor, wav_data):
     with torch.no_grad():
         _, outputs = model(input_values=input_values, mel_spectrogram=mel_spectrogram)
 
-    
-    return outputs#[1]
+    return outputs
+
 
 
 
