@@ -11,6 +11,7 @@ import pickle
 import time
 import pygame
 import sys
+from scipy.spatial.distance import cosine
 
 
 class Functions:
@@ -59,20 +60,34 @@ class Functions:
         return d[model]
        
     
-    def generate_playlist(self, dimensional, cut = 10):
-        songs_list = pd.DataFrame({"id": self.data["musicId"], "eucl_dist":self.data[["Valence", "Arousal"]]\
-                           .apply(lambda x: np.linalg.norm(x - dimensional), axis=1), "Valence": self.data["Valence"], \
+    def generate_playlist(self, dimensional, distance:str,  cut:int = 10):
+        dist_dict = {
+            "Euclidean": lambda x, y: np.linalg.norm(x-y),
+            "Cosine": lambda x, y: cosine(x, y)
+        }
+        dist_func = dist_dict[distance]
+        songs_list = pd.DataFrame({"id": self.data["musicId"], "dist":self.data[["Valence", "Arousal"]]\
+                           .apply(lambda x: dist_func(x, dimensional), axis=1), "Valence": self.data["Valence"], \
                             "Arousal": self.data["Arousal"],\
                             "title":self.data["title"], "artist": self.data["artist"], "mp3_path":self.data["mp3_path"]})
 
-        return songs_list.sort_values(by="eucl_dist")[:cut]
+        return songs_list.sort_values(by="dist")[:cut]
 
 
 class Recommersion:
     def __init__(self, root):
         self.root = root
         self.root.title("Recommersion - Emotion-Based Music Recommendation")
-        self.root.geometry("800x800")
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+
+        width = int(screen_width * 0.35)  
+        height = int(screen_height * 0.8) 
+
+        x = (screen_width - width) // 2
+        y = (screen_height - height) // 2
+
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
         self.root.resizable(False, False)
 
         self.mixer = pygame.mixer
@@ -103,7 +118,7 @@ class Recommersion:
         if self.playlist_initialized:
             if not (self.mixer.music.get_busy() or self.paused):
                 self.next_song()
-        self.root.after(300, self.poll_pygame_events)
+        self.root.after(150, self.poll_pygame_events)
 
 
     def initialize_functions(self):
@@ -153,6 +168,15 @@ class Recommersion:
         self.cut.grid(row=2, column=1, padx=10, pady=10, sticky="w")
         self.cut_text.trace_add("write", self.on_text_change)
 
+        self.distance_label = ttk.Label(input_frame, text="Distance", font=("Arial", 16), anchor="w")
+        self.distance_label.grid(row=3, column=0, padx=10, pady=10, sticky="w")
+
+        self.DISTANCE_OPTIONS = ["Euclidean", "Cosine"]
+        self.distance = tk.StringVar(value=self.DISTANCE_OPTIONS[0])  # Set the default selection
+        self.menu_distance = ttk.OptionMenu(input_frame, self.distance, *self.DISTANCE_OPTIONS)
+        self.menu_distance.grid(row=3, column=1, padx=10, pady=10, sticky="w")
+        self.distance.trace_add("write", self.on_option_change_distance)
+
         input_frame.grid_rowconfigure(3, weight=1)
         input_frame.grid_columnconfigure(2, weight=1)
 
@@ -168,7 +192,10 @@ class Recommersion:
 
 
     def on_option_change(self, *args):
-        print(f"Selected option: {self.model.get()}")
+        print(f"Selected model option: {self.model.get()}")
+    
+    def on_option_change_distance(self, *args):
+        print(f"Selected distance option: {self.distance.get()}")
 
 
     def update_options(self):
@@ -197,6 +224,7 @@ class Recommersion:
 
         ttk.Button(adjustment_frame, text="Recompute Playlist", command=self.adjust_recommendation).grid(row=2, column=0, columnspan=2, pady=10)
 
+
     def create_playlist_frame(self):
         playlist_frame = ttk.LabelFrame(self.root, text="Playlist")
         playlist_frame.pack(pady=10, padx=10, fill="both", expand="yes")
@@ -204,6 +232,7 @@ class Recommersion:
         self.playlist_label = tk.Listbox(playlist_frame, selectmode=tk.SINGLE, width=40, height=10)
         self.playlist_label.pack(padx=10, pady=10, fill="both", expand=True)
         self.playlist_label.bind('<<ListboxSelect>>', self.play_in_the_box)
+
 
     def create_controls_frame(self):
         controls_frame = ttk.LabelFrame(self.root, text="Playback Controls")
@@ -219,13 +248,25 @@ class Recommersion:
         self.volume_slider.set(50)
         self.volume_slider.grid(row=1, column=1, columnspan=3, padx=10, pady=10)
     
+
     def check_cut(self, cut:str):
         if cut.isdigit() and int(cut)>0 and int(cut)<len(self.functions.data):
             return int(cut)
         else:
             messagebox.showinfo("Value Error", "Set a positive integer type greater than zero or a minor number!")
             return None
-            
+    
+
+    def compute_playlist(self, dimensional):
+        cut = self.check_cut(self.cut_text.get())
+        if cut is None:
+            return
+        playlist = self.functions.generate_playlist(dimensional = dimensional, distance=self.distance.get(), cut = cut)
+        messagebox.showinfo("Adjusting Recommendation", \
+                            f"Adjusting playlist with valence {dimensional[0]} and arousal {dimensional[1]}")
+        print(playlist)
+        self.root.after(0, lambda: self.update_playlist(playlist))
+
 
     # Placeholder methods for functionalities
     def start_microphone(self):
@@ -242,12 +283,7 @@ class Recommersion:
             self.root.after(0, lambda: self.valence_slider.set(dimensional[0] * self.valence_slider.cget("to")))
             self.root.after(0, lambda: self.arousal_slider.set(dimensional[1] * self.arousal_slider.cget("to")))
             print("after setting")
-            cut = self.check_cut(self.cut_text.get())
-            if cut is None:
-                return
-            playlist = self.functions.generate_playlist(dimensional = dimensional, cut = cut)
-            print(playlist)
-            self.root.after(0, lambda: self.update_playlist(playlist))
+            self.compute_playlist(dimensional)
         else:
             messagebox.showinfo("Microphone", "No songs to compute yet")
 
@@ -263,20 +299,14 @@ class Recommersion:
         self.paused = False
         self.playlist_initialized = True  # Set the flag here
         self.play_song()
-    
 
+    
     def adjust_recommendation(self):
         if self.data_loaded:
             valence = self.valence_slider.get() / self.valence_slider.cget("to")
             arousal = self.arousal_slider.get() / self.valence_slider.cget("to")
             print(valence, arousal)
-            cut = self.check_cut(self.cut_text.get())
-            if cut is None:
-                return
-            playlist = self.functions.generate_playlist(dimensional = [valence, arousal], cut = cut)
-            print(playlist)
-            messagebox.showinfo("Adjusting Recommendation", f"Adjusting playlist with valence {valence} and arousal {arousal}")
-            self.root.after(0, lambda :self.update_playlist(playlist))
+            self.compute_playlist([valence, arousal])
         else:
             messagebox.showinfo("Recompute playlist", "No songs to compute yet")
 
