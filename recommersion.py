@@ -1,4 +1,5 @@
 import tkinter as tk
+import customtkinter as ctk
 from tkinter import ttk, messagebox, Scale
 from vocal_assistant.vocal_assistant import VocalAssistant
 from vocal_assistant.emotion.emotion_model import process_func
@@ -10,9 +11,11 @@ import threading
 import pickle
 import time
 import pygame
-import sys
 from scipy.spatial.distance import cosine
 
+
+ctk.set_appearance_mode("System")  # Modes: "System" (standard), "Dark", "Light"
+ctk.set_default_color_theme("dark-blue")  # Themes: "blue" (standard), "green", "dark-blue"
 
 class Functions:
     def __init__(self, callback):
@@ -74,21 +77,18 @@ class Functions:
         return songs_list.sort_values(by="dist")[:cut]
 
 
-class Recommersion:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Recommersion - Emotion-Based Music Recommendation")
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
+class Recommersion(ctk.CTk):
+    def __init__(self):
+        super().__init__()
 
-        width = int(screen_width * 0.35)  
-        height = int(screen_height * 0.8) 
+        # configure window
+        self.title("Recommersion - Emotion-Based Music Recommendation")
+        self.geometry(f"{1100}x{580}")
 
-        x = (screen_width - width) // 2
-        y = (screen_height - height) // 2
-
-        self.root.geometry(f"{width}x{height}+{x}+{y}")
-        self.root.resizable(False, False)
+        # configure grid layout (4x4)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure((2, 3), weight=0)
+        self.grid_rowconfigure((0, 1, 2), weight=1)
 
         self.mixer = pygame.mixer
         self.mixer.init()
@@ -100,11 +100,10 @@ class Recommersion:
         self.paused = True
 
         
-        self.create_widgets()
         self.text_var = tk.StringVar()
         self.text_var.set("Loading dataset, please wait...")
-        self.loading_label = ttk.Label(self.root, textvariable=self.text_var, font=("Arial", 16))
-        self.loading_label.pack(pady=20)
+        self.loading_label = ctk.CTkLabel(self, textvariable=self.text_var, font = ctk.CTkFont(size=16, weight="bold"))
+        self.loading_label.grid(pady=20)
         
         self.functions = None
         self.data_loaded = False
@@ -113,12 +112,99 @@ class Recommersion:
         self.poll_pygame_events()
             
 
+        # create sidebar frame with widgets
+        self.input_frame = ctk.CTkFrame(self, width=140, corner_radius=0, fg_color="black")
+        self.input_frame.grid(row=0, column=0, rowspan=4, sticky="nsew")
+        self.input_frame.grid_rowconfigure(5, weight=1)
+        self.input_frame.grid_columnconfigure(2, weight=1)
+
+        self.logo_label = ctk.CTkLabel(self.input_frame, text="Input", font=ctk.CTkFont(size=20, weight="bold"))
+        self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
+
+        self.microphone = ctk.CTkButton(self.input_frame, text="🎤 Speak Emotion", command=self.start_microphone)
+        self.microphone.grid(row=1, column=0, padx=20, pady=10)
+        self.text_label = ctk.CTkLabel(self.input_frame, text="Your speech text:", font=("Arial", 16), anchor="w")
+        self.text_label.grid(row=1, column=1, padx=10, pady=10, sticky="nsew")
+
+        self.model_label = ctk.CTkLabel(self.input_frame, text="Model:", font=("Arial", 16), anchor="w")
+        self.model_label.grid(row=2, column=0, padx=20, pady=10)
+
+        self.MODEL_OPTIONS = ["Audeering", "Custom"]
+        self.model = ctk.StringVar(value=self.MODEL_OPTIONS[0])  # Set the default selection
+        self.menu = ctk.CTkOptionMenu(self.input_frame, values = self.MODEL_OPTIONS, command = self.on_option_change)
+        self.menu.grid(row=2, column=1, padx=10, pady=10)
+        self.model.trace_add("write", self.on_option_change)
+
+        self.cut_label = ctk.CTkLabel(self.input_frame, text="Number of Songs:", font=("Arial", 16), anchor="w")
+        self.cut_label.grid(row=3, column=0, padx=20, pady=10)
+
+        self.cut_text = ctk.StringVar(value="10")  # Default value
+        self.cut = ctk.CTkEntry(self.input_frame, placeholder_text=self.cut_text.get())
+        self.cut.grid(row=3, column=1, padx=10, pady=10)
+        self.cut_text.trace_add("write", self.on_text_change)
+
+        self.distance_label = ctk.CTkLabel(self.input_frame, text="Distance", font=("Arial", 16), anchor="w")
+        self.distance_label.grid(row=4, column=0, padx=20, pady=10)
+
+        self.DISTANCE_OPTIONS = ["Euclidean", "Cosine"]
+        self.distance = ctk.StringVar(value=self.DISTANCE_OPTIONS[0])  # Set the default selection
+        self.menu_distance = ctk.CTkOptionMenu(self.input_frame, values = self.DISTANCE_OPTIONS, command = self.on_option_change_distance)
+        self.menu_distance.grid(row=4, column=1, padx=10, pady=10)
+        self.distance.trace_add("write", self.on_option_change_distance)
+
+    
+        self.after(2000, self.update_text)
+
+        self.playlist_and_control_frame = ctk.CTkFrame(self, width = 1000)
+        self.playlist_and_control_frame.grid(row=0, column=1, rowspan=4, sticky="nsew")
+        self.playlist_and_control_frame.grid_rowconfigure(2, weight=1)
+        self.playlist_and_control_frame.grid_columnconfigure(0, weight=1)
+
+        # create main entry and button
+        self.controls_frame = ctk.CTkFrame(self, width = 1000)
+        self.controls_frame.grid(row=2, column=1, columnspan=2, padx=(20, 20), pady=(20,0), sticky="nsew")
+        self.controls_frame.grid_columnconfigure(4, weight=1)
+        self.controls_frame.grid_rowconfigure(2, weight=1)
+
+        ctk.CTkButton(self.controls_frame, text="⏮ Prev", command=self.previous_song).grid(row=0, column=0, padx=10, pady=10)
+        ctk.CTkButton(self.controls_frame, text="▷ Play", command=self.play_button).grid(row=0, column=1, padx=10, pady=10)
+        ctk.CTkButton(self.controls_frame, text="⏸️ Pause", command=self.pause_song).grid(row=0, column=2, padx=10, pady=10)
+        ctk.CTkButton(self.controls_frame, text="Next ⏭", command=self.next_song).grid(row=0, column=3, padx=10, pady=10)
+
+        ctk.CTkLabel(self.controls_frame, text="Volume:").grid(row=1, column=0, padx=10, pady=10)
+        self.volume_slider = ctk.CTkSlider(self.controls_frame, from_=0, to=100, orientation="horizontal", command=self.manage_volume)
+        self.volume_slider.set(50)
+        self.volume_slider.grid(row=1, column=2, columnspan=3, padx=10, pady=10)
+
+        self.playlist_label = tk.Listbox(self.playlist_and_control_frame, selectmode=tk.SINGLE, width=40, height=10)
+        self.playlist_label.grid(row=0, column=1, padx=(20, 20), pady=(20, 20), sticky="nsew")
+        self.playlist_label.bind('<<ListboxSelect>>', self.play_in_the_box)
+
+        # create textbox
+        self.textbox = ctk.CTkTextbox(self, width=250)
+        self.textbox.grid(row=0, column=2, padx=(20, 20), pady=(20, 20), sticky="nsew")
+        self.textbox.grid_columnconfigure(0, weight=1)  
+
+        # create slider and progressbar frame
+        self.adjustment_frame = ctk.CTkFrame(self.playlist_and_control_frame, fg_color="transparent")
+        self.adjustment_frame.grid(row=1, column=1, padx=(20, 0), pady=(20, 0), sticky="nsew")
+        self.adjustment_frame.grid_columnconfigure(1, weight=1)
+        self.adjustment_frame.grid_rowconfigure(3, weight=1)
+        ctk.CTkLabel(self.adjustment_frame, text="Valence:").grid(row=0, column=0, padx=10, pady=10)
+        self.valence_slider = ctk.CTkSlider(self.adjustment_frame, from_=0, to=1000, orientation="horizontal")
+        self.valence_slider.grid(row=0, column=1, padx=10, pady=10)
+
+        ctk.CTkLabel(self.adjustment_frame, text="Arousal:").grid(row=1, column=0, padx=10, pady=10)
+        self.arousal_slider = ctk.CTkSlider(self.adjustment_frame, from_=0, to=1000, orientation="horizontal")
+        self.arousal_slider.grid(row=1, column=1, padx=10, pady=10)
+
+        ctk.CTkButton(self.adjustment_frame, text="Recompute Playlist", command=self.adjust_recommendation).grid(row=2, column=0, columnspan=2, pady=10)
+        
     def poll_pygame_events(self):
-        """Poll for pygame mixer events and handle them."""
         if self.playlist_initialized:
             if not (self.mixer.music.get_busy() or self.paused):
                 self.next_song()
-        self.root.after(150, self.poll_pygame_events)
+        self.after(150, self.poll_pygame_events)
 
 
     def initialize_functions(self):
@@ -130,60 +216,8 @@ class Recommersion:
         self.data_loaded = True
         time.sleep(10)
         self.loading_label.pack_forget()
-
-
-    def create_widgets(self):
-        self.create_input_frame()
-        self.create_playlist_frame()
-        self.create_adjustment_frame()
-        self.create_controls_frame()
-
-
-
-    def create_input_frame(self):
-        input_frame = ttk.LabelFrame(self.root, text="Input Emotion")
-        input_frame.pack(pady=10, padx=10, fill="both", expand=True)
-
-        ttk.Button(input_frame, text="🎤 Speak Emotion", command=self.start_microphone).grid(
-            row=0, column=0, padx=10, pady=10, sticky="w"
-        )
-
-        self.text_label = ttk.Label(input_frame, text="Your speech text:", font=("Arial", 16), anchor="w")
-        self.text_label.grid(row=0, column=1, padx=10, pady=10, sticky="w")
-
-        self.model_label = ttk.Label(input_frame, text="Model:", font=("Arial", 16), anchor="w")
-        self.model_label.grid(row=1, column=0, padx=10, pady=10, sticky="w")
-
-        self.MODEL_OPTIONS = ["Audeering", "Custom"]
-        self.model = tk.StringVar(value=self.MODEL_OPTIONS[0])  # Set the default selection
-        self.menu = ttk.OptionMenu(input_frame, self.model, *self.MODEL_OPTIONS)
-        self.menu.grid(row=1, column=1, padx=10, pady=10, sticky="w")
-        self.model.trace_add("write", self.on_option_change)
-
-        self.cut_label = ttk.Label(input_frame, text="Number of Songs:", font=("Arial", 16), anchor="w")
-        self.cut_label.grid(row=2, column=0, padx=10, pady=10, sticky="w")
-
-        self.cut_text = tk.StringVar(value="10")  # Default value
-        self.cut = ttk.Entry(input_frame, textvariable=self.cut_text, width=10)
-        self.cut.grid(row=2, column=1, padx=10, pady=10, sticky="w")
-        self.cut_text.trace_add("write", self.on_text_change)
-
-        self.distance_label = ttk.Label(input_frame, text="Distance", font=("Arial", 16), anchor="w")
-        self.distance_label.grid(row=3, column=0, padx=10, pady=10, sticky="w")
-
-        self.DISTANCE_OPTIONS = ["Euclidean", "Cosine"]
-        self.distance = tk.StringVar(value=self.DISTANCE_OPTIONS[0])  # Set the default selection
-        self.menu_distance = ttk.OptionMenu(input_frame, self.distance, *self.DISTANCE_OPTIONS)
-        self.menu_distance.grid(row=3, column=1, padx=10, pady=10, sticky="w")
-        self.distance.trace_add("write", self.on_option_change_distance)
-
-        input_frame.grid_rowconfigure(3, weight=1)
-        input_frame.grid_columnconfigure(2, weight=1)
-
-        self.root.after(2000, self.update_options)
-        self.root.after(2000, self.update_text)
-
-
+  
+    
     def on_text_change(self, *args):
         print(f"Current text in Entry: {self.cut_text.get()}")
 
@@ -196,59 +230,7 @@ class Recommersion:
     
     def on_option_change_distance(self, *args):
         print(f"Selected distance option: {self.distance.get()}")
-
-
-    def update_options(self):
-        
-        menu = self.menu["menu"]
-        menu.delete(0, "end")  
-        
-        for option in self.MODEL_OPTIONS:
-            menu.add_command(label=option, command=lambda value=option: self.model.set(value))
-
-        if self.model.get() not in self.MODEL_OPTIONS:
-            self.model.set(self.OPTIONS[0])
-        
-
-    def create_adjustment_frame(self):
-        adjustment_frame = ttk.LabelFrame(self.root, text="Adjust Emotion - Valence and Arousal")
-        adjustment_frame.pack(pady=10, padx=10, fill="both", expand="yes")
-
-        ttk.Label(adjustment_frame, text="Valence:").grid(row=0, column=0, padx=10, pady=10)
-        self.valence_slider = Scale(adjustment_frame, from_=0, to=1000, orient="horizontal", length=200)
-        self.valence_slider.grid(row=0, column=1, padx=10, pady=10)
-
-        ttk.Label(adjustment_frame, text="Arousal:").grid(row=1, column=0, padx=10, pady=10)
-        self.arousal_slider = Scale(adjustment_frame, from_=0, to=1000, orient="horizontal", length=200)
-        self.arousal_slider.grid(row=1, column=1, padx=10, pady=10)
-
-        ttk.Button(adjustment_frame, text="Recompute Playlist", command=self.adjust_recommendation).grid(row=2, column=0, columnspan=2, pady=10)
-
-
-    def create_playlist_frame(self):
-        playlist_frame = ttk.LabelFrame(self.root, text="Playlist")
-        playlist_frame.pack(pady=10, padx=10, fill="both", expand="yes")
-        
-        self.playlist_label = tk.Listbox(playlist_frame, selectmode=tk.SINGLE, width=40, height=10)
-        self.playlist_label.pack(padx=10, pady=10, fill="both", expand=True)
-        self.playlist_label.bind('<<ListboxSelect>>', self.play_in_the_box)
-
-
-    def create_controls_frame(self):
-        controls_frame = ttk.LabelFrame(self.root, text="Playback Controls")
-        controls_frame.pack(pady=10, padx=10, fill="both", expand="yes")
-
-        ttk.Button(controls_frame, text="▷ Play", command=self.play_button).grid(row=0, column=0, padx=10, pady=10)
-        ttk.Button(controls_frame, text="⏸️ Pause", command=self.pause_song).grid(row=0, column=1, padx=10, pady=10)
-        ttk.Button(controls_frame, text="⏮ Prev", command=self.previous_song).grid(row=0, column=2, padx=10, pady=10)
-        ttk.Button(controls_frame, text="Next ⏭", command=self.next_song).grid(row=0, column=3, padx=10, pady=10)
-
-        ttk.Label(controls_frame, text="Volume:").grid(row=1, column=0, padx=10, pady=10)
-        self.volume_slider = Scale(controls_frame, from_=0, to=100, orient="horizontal", length=200, command = self.manage_volume)
-        self.volume_slider.set(50)
-        self.volume_slider.grid(row=1, column=1, columnspan=3, padx=10, pady=10)
     
-
     def check_cut(self, cut:str):
         if cut.isdigit() and int(cut)>0 and int(cut)<len(self.functions.data):
             return int(cut)
@@ -265,7 +247,7 @@ class Recommersion:
         messagebox.showinfo("Adjusting Recommendation", \
                             f"Adjusting playlist with valence {dimensional[0]} and arousal {dimensional[1]}")
         print(playlist)
-        self.root.after(0, lambda: self.update_playlist(playlist))
+        self.after(0, lambda: self.update_playlist(playlist))
 
 
     # Placeholder methods for functionalities
@@ -280,8 +262,8 @@ class Recommersion:
                                                                  model = self.model.get())
             print(dimensional)
             print("before setting")
-            self.root.after(0, lambda: self.valence_slider.set(dimensional[0] * self.valence_slider.cget("to")))
-            self.root.after(0, lambda: self.arousal_slider.set(dimensional[1] * self.arousal_slider.cget("to")))
+            self.after(0, lambda: self.valence_slider.set(dimensional[0] * self.valence_slider.cget("to")))
+            self.after(0, lambda: self.arousal_slider.set(dimensional[1] * self.arousal_slider.cget("to")))
             print("after setting")
             self.compute_playlist(dimensional)
         else:
@@ -370,7 +352,7 @@ class Recommersion:
 
     def fade_out_and_exit(self):
         print("Performing fade-out before exit...")
-        root.stop_threads()
+        #root.stop_threads()
         self.mixer.music.fadeout(300)  
         self.time.wait(300)  
         self.mixer.quit()  
@@ -378,24 +360,11 @@ class Recommersion:
 
     def __del__(self):
         self.fade_out_and_exit()
-
-
+        
 
 if __name__ == "__main__":
-    try:
-        while True:
-            root = tk.Tk()
-            root.option_add("*Font", "Arial 12")
-            app = Recommersion(root)
-            root.mainloop()
+    app = Recommersion()
+    app.mainloop()
 
-    except KeyboardInterrupt:
-        print("KeyboardInterrupt received. Exiting gracefully...")
-        root.stop_threads()
-        sys.exit(0)
-    except SystemExit:
-        print("SystemExit received. Performing cleanup...")
-        root.stop_threads()
-        sys.exit(0)
 
 
