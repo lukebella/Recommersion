@@ -9,13 +9,13 @@ import pandas as pd
 import numpy as np
 import threading
 import pickle
-import time
 import pygame
 from scipy.spatial.distance import cosine
+from hover_interface.hover_text import HoverText
 
 
-ctk.set_appearance_mode("System")  # Modes: "System" (standard), "Dark", "Light"
-ctk.set_default_color_theme("dark-blue")  # Themes: "blue" (standard), "green", "dark-blue"
+ctk.set_appearance_mode("System")  
+ctk.set_default_color_theme("dark-blue")  
 
 class Functions:
     def __init__(self, callback):
@@ -81,16 +81,13 @@ class Recommersion(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        # configure window
         self.title("Recommersion - Emotion-Based Music Recommendation")
-        self.geometry(f"{1250}x{750}")
+        self.geometry(f"{1300}x{850}")
         self.resizable(True, True)
         
-
-        # configure grid layout (4x4)
         self.grid_columnconfigure(1, weight=1)
         self.grid_columnconfigure((2, 3), weight=0)
-        self.grid_rowconfigure((0, 1, 2, 3), weight=1)
+        self.grid_rowconfigure((0, 1, 2, 3, 4), weight=1)
 
         self.mixer = pygame.mixer
         self.mixer.init()
@@ -100,12 +97,12 @@ class Recommersion(ctk.CTk):
 
         self.current_song = pd.DataFrame([])
         self.paused = True
-
+        self.hover_text = HoverText("hover_interface/widget_hover.txt")
         
         self.text_var = ctk.StringVar()
         self.text_var.set("Loading dataset, please wait...")
         self.loading_label = ctk.CTkLabel(self, text= self.text_var.get(), textvariable=self.text_var, font = ctk.CTkFont(size=16, weight="bold"))
-        self.loading_label.grid(row=3, column=0, sticky="nsew")
+        self.loading_label.grid(row=4, column=0, sticky="nsew")
         
         self.functions = None
         self.data_loaded = False
@@ -113,8 +110,11 @@ class Recommersion(ctk.CTk):
         self.playlist_initialized = False
         self.poll_pygame_events()
             
-
-        # create sidebar frame with widgets
+        self.create_input_frame()
+        self.create_playlist_frame()
+        
+        
+    def create_input_frame(self):
         self.input_frame = ctk.CTkFrame(self, width=140, corner_radius=0, fg_color="gray5")
         self.input_frame.grid(row=0, column=0, rowspan=4, sticky="nsew")
         self.input_frame.grid_rowconfigure(9, weight=1)
@@ -125,10 +125,12 @@ class Recommersion(ctk.CTk):
 
         self.microphone = ctk.CTkButton(self.input_frame, text="🎤 Speak Emotion", command=self.start_microphone)
         self.microphone.grid(row=1, column=0, padx=20, pady=10)
+        self.microphone.bind("<Enter>", lambda event: self.hover_show(event, "microphone"))
         self.speech_var = ctk.StringVar()
         self.speech_var.set("Your speech text:")
         self.text_label = ctk.CTkLabel(self.input_frame, text=self.speech_var.get(), textvariable=self.speech_var, font=("Italic", 16), anchor="w")
-        self.text_label.grid(row=1, column=1, padx=10, pady=10, sticky="nsew")
+        self.text_label.bind("<Enter>", lambda event: self.hover_show(event, "text_label"))
+        self.text_label.grid(row=1, column=1, padx=(10,20), pady=10, sticky="nsew")
 
         self.model_label = ctk.CTkLabel(self.input_frame, text="Model:", font=("Arial", 16), anchor="w")
         self.model_label.grid(row=2, column=0, padx=20, pady=10)
@@ -137,7 +139,8 @@ class Recommersion(ctk.CTk):
         self.model = ctk.StringVar(value=self.MODEL_OPTIONS[0])  # Set the default selection
         self.menu = ctk.CTkOptionMenu(self.input_frame, values = self.MODEL_OPTIONS, \
                                       variable = self.model, command = self.on_option_change)
-        self.menu.grid(row=2, column=1, padx=(10,20), pady=10)
+        self.menu.grid(row=2, column=1, padx=(10,60), pady=10)
+        self.menu.bind("<Enter>", lambda event: self.hover_show(event, "menu"))
         self.model.trace_add("write", self.on_option_change)
 
         self.parameters_label = ctk.CTkLabel(self.input_frame, text="Parameters", font=ctk.CTkFont(size=20, weight="bold"))
@@ -147,7 +150,8 @@ class Recommersion(ctk.CTk):
 
         self.cut_text = ctk.StringVar(value="10")  # Default value
         self.cut = ctk.CTkEntry(self.input_frame, placeholder_text=self.cut_text.get(), textvariable=self.cut_text)
-        self.cut.grid(row=4, column=1, padx=(10,20), pady=10)
+        self.cut.grid(row=4, column=1, padx=(10,60), pady=10)
+        self.cut.bind("<Enter>", lambda event: self.hover_show(event, "cut"))
         self.cut_text.trace_add("write", self.on_text_change)
 
         self.distance_label = ctk.CTkLabel(self.input_frame, text="Distance", font=("Arial", 16), anchor="w")
@@ -157,16 +161,19 @@ class Recommersion(ctk.CTk):
         self.distance = ctk.StringVar(value=self.DISTANCE_OPTIONS[0])  # Set the default selection
         self.menu_distance = ctk.CTkOptionMenu(self.input_frame, values = self.DISTANCE_OPTIONS, \
                                                variable=self.distance, command = self.on_option_change_distance)
-        self.menu_distance.grid(row=5, column=1, padx=(10,20), pady=10)
+        self.menu_distance.grid(row=5, column=1, padx=(10,60), pady=10)
+        self.menu_distance.bind("<Enter>", lambda event: self.hover_show(event, "menu_distance"))
         self.distance.trace_add("write", self.on_option_change_distance)
         self.instr_label = ctk.CTkLabel(self.input_frame, text = "Instructions",font=ctk.CTkFont(size=20, weight="bold"))
-        self.instr_label.grid(row=7, column=0, padx=(50, 20), pady=(100, 10), sticky="w")
-        self.textbox = ctk.CTkTextbox(self.input_frame, width=200)
-        self.textbox.grid(row=8, column=0, padx=(50, 20), pady=(20, 20), sticky="w")
-
-    
+        self.instr_label.grid(row=7, column=0, padx=(20, 20), pady=(100, 10), sticky="w")
+        self.textbox = ctk.CTkTextbox(self.input_frame, wrap = "word", height=150, width=300, font=ctk.CTkFont("italic", size=15))
+        self.textbox.insert(1.0, self.hover_text.get_widget("general"))
+        self.textbox.grid(row=8, column=0, padx=(20, 20), pady=(20, 20), sticky="nsew")
+        
         self.after(2000, self.update_text)
 
+
+    def create_playlist_frame(self):
         self.playlist_and_control_frame = ctk.CTkFrame(self, width = 500, bg_color ="navy", fg_color="goldenrod4")
         self.playlist_and_control_frame.grid(row=0, column=1, rowspan=4, sticky="nsew")
         self.playlist_and_control_frame.grid_rowconfigure(6, weight=1)
@@ -175,7 +182,6 @@ class Recommersion(ctk.CTk):
         self.playlist_label = ctk.CTkLabel(self.playlist_and_control_frame, text="Playlist", \
                                            font=ctk.CTkFont(size=20, weight="bold"), text_color="black")
         self.playlist_label.grid(row=0, column=1, padx=20, pady=(20, 5))
-        # Connect the Listbox to the Scrollbar
         self.playlist_box = ttk.Treeview(self.playlist_and_control_frame, selectmode=tk.BROWSE, height=10)
         self.playlist_box.grid(row=1, column=1, padx=(20, 20), pady=(20, 20), sticky="nsew")
         self.playlist_box["columns"] = ("Artist", "Song")
@@ -186,11 +192,11 @@ class Recommersion(ctk.CTk):
         self.playlist_box.heading("Artist", text="Artist", anchor = tk.CENTER)
         self.playlist_box.heading("Song", text="Song", anchor = tk.CENTER)
         scrollbar = tk.Scrollbar(self.playlist_and_control_frame, orient=tk.VERTICAL, command=self.playlist_box.yview)
-        #scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.playlist_box.config(yscrollcommand=scrollbar.set)
         self.canvas = ctk.CTkCanvas(self.playlist_box, width=2, height=200, bg="white", borderwidth=0, highlightthickness=0)
 
         self.playlist_box.bind('<<TreeviewSelect>>', self.play_in_the_box)
+        self.playlist_box.bind("<Enter>", lambda event: self.hover_show(event, "playlist_box"))
 
         self.adj_label = ctk.CTkLabel(self.playlist_and_control_frame, text="Emotional Adjustments", \
                                       font=ctk.CTkFont(size=20, weight="bold"), text_color="black")
@@ -205,22 +211,27 @@ class Recommersion(ctk.CTk):
                     .grid(row=0, column=0, padx=0, pady=10)                                                                                         
         self.valence_slider = ctk.CTkSlider(self.adjustment_frame, from_=0, to=1000, orientation="horizontal", width = 500 )
         self.valence_slider.grid(row=0, column=1, padx=0, pady=10, sticky = 'ew')
+        self.valence_slider.bind("<Enter>", lambda event: self.hover_show(event, "valence_slider"))
         ctk.CTkLabel(self.adjustment_frame, text="😁", text_color="black", font=ctk.CTkFont(size=15, weight="bold"))\
                     .grid(row=0, column=2, padx=(10,20), pady=10, sticky = 'nsew')
         ctk.CTkLabel(self.adjustment_frame, text="Arousal: 🧘🏼", text_color="black", font=ctk.CTkFont(size=15, weight="bold"))\
                     .grid(row=1, column=0, padx=10, pady=10)
         self.arousal_slider = ctk.CTkSlider(self.adjustment_frame, from_=0, to=1000, orientation="horizontal", width = 500)
         self.arousal_slider.grid(row=1, column=1, padx=0, pady=10, sticky = 'ew')
+        self.arousal_slider.bind("<Enter>", lambda event: self.hover_show(event, "arousal_slider"))
         ctk.CTkLabel(self.adjustment_frame, text="🔥", text_color="black", font=ctk.CTkFont(size=15, weight="bold"))\
                     .grid(row=1, column=2, padx=(10,20), pady=10, sticky='nsew')
-        ctk.CTkButton(self.adjustment_frame, text="Recompute Playlist", command=self.adjust_recommendation, width = 200)\
-                    .grid(row=2, column=0, columnspan=2, padx=(300,10), pady=(50,30), sticky = "w")
+        self.recompute_playlist = ctk.CTkButton(self.adjustment_frame, text="Recompute Playlist", command=self.adjust_recommendation, width = 200)
         
-        # create main entry and button
+        self.recompute_playlist.grid(row=2, column=0, columnspan=2, padx=(150,100), pady=(50,30), sticky = "nsew")
+        self.recompute_playlist.bind("<Enter>", lambda event: self.hover_show(event, "recompute_playlist"))
+              
         self.song_frame = ctk.CTkFrame(self.playlist_and_control_frame, width = 500, height=50, fg_color="SkyBlue2", bg_color="SkyBlue2")
         self.song_frame.grid(row=5, column=1, columnspan=4, padx=(0, 0), pady=(50,0), sticky="nsew")
+        self.song_frame.bind("<Enter>", lambda event: self.hover_show(event, "song_frame"))
         self.controls_frame = ctk.CTkFrame(self.playlist_and_control_frame, width = 500, fg_color="RoyalBlue2", bg_color="RoyalBlue2")
         self.controls_frame.grid(row=6, column=1, columnspan=4, padx=(0, 0), pady=(0,0), sticky="nsew")
+        self.controls_frame.bind("<Enter>", lambda event: self.hover_show(event, "controls_frame"))
         self.controls_frame.grid_columnconfigure(6, weight=1)
         self.controls_frame.grid_rowconfigure(1, weight=1)
 
@@ -228,18 +239,19 @@ class Recommersion(ctk.CTk):
         self.song_var = ctk.StringVar()
         self.song_var.set("No song played...")
         self.song_label = ctk.CTkLabel(self.song_frame, text=self.song_var.get(), textvariable=self.song_var, width=500, \
-                                       font=("Helvetica", 16, "bold"), anchor="center")
-        self.song_label.grid(row = 0, column = 0, padx=(160, 100), pady=(20,20), sticky="nsew")
-        ctk.CTkButton(self.controls_frame, width = 50, text="⏮", command=self.previous_song).grid(row=1, column=0, padx=(290,5), pady=10, sticky = "w")
+                                       font=("Helvetica", 16, "bold"), anchor="center", text_color="black")
+        self.song_label.grid(row = 0, column = 0, padx=(90, 100), pady=(20,20), sticky="nsew")
+        ctk.CTkButton(self.controls_frame, width = 50, text="⏮", command=self.previous_song).grid(row=1, column=0, padx=(220,5), pady=10, sticky = "w")
         ctk.CTkButton(self.controls_frame, width = 50, text="▷", command=self.play_button).grid(row=1, column=1, padx=5, pady=10, sticky = "w")
         ctk.CTkButton(self.controls_frame, width = 50, text="⏸︎", command=self.pause_song).grid(row=1, column=2, padx=5, pady=10, sticky = "w")
         ctk.CTkButton(self.controls_frame, width = 50, text="⏭", command=self.next_song).grid(row=1, column=3, padx=(5,20), pady=10, sticky = "w")
 
-        ctk.CTkLabel(self.controls_frame, text="Volume:").grid(row=1, column=4, padx=(80,10), pady=10)
+        ctk.CTkLabel(self.controls_frame, text="Volume:").grid(row=1, column=4, padx=(60,10), pady=10)
         self.volume_slider = ctk.CTkSlider(self.controls_frame, from_=0, to=100, orientation="horizontal", command=self.manage_volume)
         self.volume_slider.set(50)
         self.volume_slider.grid(row=1, column=5, columnspan=3, padx=10, pady=10, sticky = 'w')
-        
+
+
 
 
     def poll_pygame_events(self):
@@ -247,6 +259,7 @@ class Recommersion(ctk.CTk):
             if not (self.mixer.music.get_busy() or self.paused):
                 self.next_song()
         self.after(150, self.poll_pygame_events)
+        
 
 
     def initialize_functions(self):
@@ -256,9 +269,15 @@ class Recommersion(ctk.CTk):
         # Remove loading message
         self.text_var.set("Data Loaded: Songs dataset loaded successfully!")
         self.data_loaded = True
-        time.sleep(10)
-        self.loading_label.pack_forget()
-  
+        #self.after(10000, self.remove_loading_label())
+    
+    # def remove_loading_label(self):
+    #     self.loading_label.pack_forget()
+
+    def hover_show(self, event, s):
+        text = self.hover_text.get_widget(s)
+        self.textbox.delete(1.0, ctk.END)  
+        self.textbox.insert(ctk.END, text)
     
     def on_text_change(self, *args):
         print(f"Current text in Entry: {self.cut_text.get()}")
@@ -293,7 +312,6 @@ class Recommersion(ctk.CTk):
         self.after(0, lambda: self.update_playlist(playlist))
 
 
-    # Placeholder methods for functionalities
     def start_microphone(self):
         if self.data_loaded:
             messagebox.showinfo("Microphone", "Microphone started! Please speak.")

@@ -1,0 +1,13 @@
+general=Welcome to Recommersion! To get started, record your voice with "Speak Emotion" button above or adjust the valence and arousal sliders parameters on the right. If you don't know how this software works, hover the elements to read the instructions here!
+valence_slider=Adjust the valence of music! Slide this widget from sad (low) to happy (high).
+arousal_slider=Adjust the arousal of music! Slide this widget from calm (low) to intense (high).
+volume_slider=Adjust the volume of the song.
+microphone=Press here for recording your voice!
+text_label=If comprehensible, Recommersion prints what you've said!
+menu=Choose which Speech Emotion Recognition model you want! These model determine the emotion in your voice in real time!
+cut=Choose how many song you wish in your playlist!
+menu_distance=Choose the criterium of distance measurement: this means which similarity technique you want to use!
+playlist_box=Once you recorded your request or adjusted the emotional sliders, the desired number of songs will appear here! You can click and listen whichever song you like!
+song_frame=Song that's been playing.
+controls_frame=Manage the song reproduction here (play, pause, next and previous song) or the volume!
+recompute_playlist=Once you've adjusted the emotional parameters, click here to generate a new playlist!
