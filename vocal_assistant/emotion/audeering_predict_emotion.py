@@ -11,13 +11,13 @@ from sklearn.model_selection import train_test_split
 from torchinfo import summary
 import matplotlib.pyplot as plt
 from torchmetrics.regression import ConcordanceCorrCoef
-#from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 import torchaudio
 import random
 import librosa
 from sklearn.model_selection import KFold
-from pathlib import Path
+
 
 class AudioAugmentation:
     def __init__(self, sample_rate=16000, noise_level=0.005, time_mask_param=30, freq_mask_param=15):
@@ -41,7 +41,8 @@ class AudioAugmentation:
     
     def augment(self, waveform):
         augmentations = [
-            self.add_background_noise,
+            #self.add_background_noise,
+            #lambda x: self.time_stretch(x, rate=random.uniform(0.8, 1.2)),
             lambda x: self.pitch_shift(x),
         ]
         random.shuffle(augmentations)
@@ -57,7 +58,7 @@ class EmotionDataset(Dataset):
         self.processor = processor
         self.augmenter = augmenter
         self.sample_rate = 16000
-        self.max_seconds = 10  #max padding seconds
+        self.max_seconds = 5  #max padding seconds
         self.threshold = 0.8  #max percentage of which files to keep
         self.attention_mask = attention_mask
 
@@ -120,6 +121,7 @@ class EmotionDataset(Dataset):
         mel_spectrogram_derivative_2 = librosa.util.normalize(mel_spectrogram_derivative_2)
 
         mel_spectrogram_stack = np.stack([mel_spectrogram, mel_spectrogram_derivative_1, mel_spectrogram_derivative_2], axis=0)
+        #print(mel_spectrogram_stack.shape)
 
         return torch.tensor(mel_spectrogram_stack, dtype=torch.float32)
 
@@ -137,10 +139,10 @@ class EmotionDataset(Dataset):
         
         #wav_data = self.normalize_waveform(wav_data)
         #wav_data = self.only_vocals(wav_data)
-        rand_augmenter = int(random.random()*1000)
+        """rand_augmenter = int(random.random()*1000)
 
-        if self.augmenter and (rand_augmenter%4==0):
-            wav_data = self.augmenter.augment(wav_data)
+        if self.augmenter and (rand_augmenter%3==0):
+            wav_data = self.augmenter.augment(wav_data)"""
 
         inputs = self.processor(wav_data, sampling_rate=self.sample_rate, return_tensors="pt", padding = 'max_length', \
                                 truncation = True, max_length = max_length, do_normalize = True,\
@@ -192,12 +194,12 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
             nn.Flatten()
         )
 
-        self.rnn = nn.LSTM(input_size= 7008, hidden_size=config.hidden_size, num_layers=2, \
+        self.rnn = nn.LSTM(input_size= 4144, hidden_size=config.hidden_size, num_layers=2, \
                            batch_first=True, bidirectional=True, dropout=0.3)
         
         self.dropout = nn.Dropout(0.5)
         self.regressor = nn.Linear(config.hidden_size*2, config.num_labels)
-        #self.act = nn.Tanh()
+        #self.act = nn.ReLU()
 
         self.init_weights()
 
@@ -220,21 +222,21 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         #print(combined_features.size())
         #combined_features = self.dropout(combined_features)
         temp,_ = self.rnn(combined_features)
-        temp = self.dropout(temp)
+        #temp = self.dropout(temp)
         #temp = self.act(temp)
         logits = self.regressor(temp)
         
         return hidden_states, logits
 
 
-#writer = SummaryWriter("runs/emotion_model")
+writer = SummaryWriter("runs/emotion_model")
 
 def log_embedding_norms(model, epoch):
     """ Log the L2 norm degli embedding del modello."""
     for name, param in model.named_parameters():
         if "wav2vec2.encoder" in name and param.requires_grad:
             embedding_norm = param.norm(2).item()
-            #writer.add_scalar(f"Embedding Norm/{name}", embedding_norm, epoch)
+            writer.add_scalar(f"Embedding Norm/{name}", embedding_norm, epoch)
 
 
 def log_gradient_norms(model, epoch):
@@ -242,7 +244,7 @@ def log_gradient_norms(model, epoch):
     for name, param in model.named_parameters():
         if param.grad is not None:
             grad_norm = param.grad.norm(2).item()
-            #.add_scalar(f"Gradient Norm/{name}", grad_norm, epoch)
+            writer.add_scalar(f"Gradient Norm/{name}", grad_norm, epoch)
 
 
 def save_checkpoint(model, optimizer, epoch, filename):
@@ -320,7 +322,7 @@ def plot_gradients(gradients, layer_name):
 
 
 def train(model, device, train_dataloader, test_dataloader, \
-          epochs=3, alpha=0.5, beta=0.5, checkpoint_path = "custom_model.pth", patience_es = 15):
+          epochs=3, alpha=0.5, beta=0.5, checkpoint_path = "aud_model.pth", patience_es = 15):
     """
     Train the model using CCC loss for valence and arousal.
     """
@@ -363,12 +365,12 @@ def train(model, device, train_dataloader, test_dataloader, \
         train_losses.append(avg_epoch_loss)
 
         print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {avg_epoch_loss}")
-        #writer.add_scalar("Loss/Train", avg_epoch_loss, epoch)
+        writer.add_scalar("Loss/Train", avg_epoch_loss, epoch)
         log_embedding_norms(model, epoch)
 
         # Validation Loop
         val_loss = validate(model, device, test_dataloader, alpha, beta)
-        #writer.add_scalar("Loss/Validation", val_loss, epoch)
+        writer.add_scalar("Loss/Validation", val_loss, epoch)
         val_losses.append(val_loss)
         # Check if validation loss improved
         if val_loss < best_val_loss:
@@ -388,7 +390,7 @@ def train(model, device, train_dataloader, test_dataloader, \
         plot_losses(train_losses, val_losses)
         scheduler.step(val_loss)
 
-    #writer.close()
+    writer.close()
     plot_losses(train_losses, val_losses)
 
 #CV
@@ -442,10 +444,14 @@ def validate(model, device, test_dataloader, alpha, beta):
     model.eval()
     avg_val_loss = 0
     val_loss = 0
+    avg_val_loss_val = 0
+    val_loss_val = 0
+    avg_val_loss_ar = 0
+    val_loss_ar = 0
     print("****VALIDATION****")
     with torch.no_grad():
         for batch in tqdm(test_dataloader):
-            loss, _, _ = compute_loss(model, device, batch, alpha, beta)
+            loss, loss_val, loss_ar = compute_loss(model, device, batch, alpha, beta)
             if loss is None: continue
 
             val_loss += loss.item()
@@ -482,9 +488,9 @@ def load_trained_model(device, checkpoint_path, pretrained_model):
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
     model = EmotionModel(config).to(device)
     processor = Wav2Vec2Processor.from_pretrained(pretrained_model)
-    print(checkpoint_path)
-    if Path(checkpoint_path).exists():
-        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    
+    if os.path.isfile(checkpoint_path):
+        checkpoint = torch.load(checkpoint_path, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         print("Loaded trained model from checkpoint.")
     else:
@@ -506,18 +512,18 @@ def predict_emotion(model, device, processor, wav_data):
     with torch.no_grad():
         _, outputs = model(input_values=input_values, mel_spectrogram=mel_spectrogram)
 
-    return outputs
-
+    
+    return outputs#[1]
 
 
 
 def main():
     device = return_device()
     
-    pretrained_model = "facebook/wav2vec2-base"    #patrickvonplaten/wav2vec2_tiny_random_robust" #w2v2-L-robust-12
+    pretrained_model = 'audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim' #"facebook/wav2vec2-base"    #patrickvonplaten/wav2vec2_tiny_random_robust" #w2v2-L-robust-12
     processor = Wav2Vec2Processor.from_pretrained(pretrained_model, attn_implementation="flash_attention_2")
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
-
+    config.num_labels = 2
     muse = pd.read_pickle("data/MuSe_sample").sample(frac=1, random_state=42)#.reset_index(drop=True)
     iemocap = pd.read_pickle("data/IEMOCAP_useful").sample(frac=1, random_state=42)
 
