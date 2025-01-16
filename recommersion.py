@@ -445,3 +445,20 @@ if __name__ == "__main__":
 
 
 
+#Tests:
+    #For Precision
+    #Cut = 5
+        #Custom/Euclidean
+        #Custom/Cosine
+        #Audeering/Euclidean
+        #Audeering/Cosine
+    #Cut = 10
+        #Custom/Euclidean
+        #Custom/Cosine
+        #Audeering/Euclidean
+        #Audeering/Cosine
+    #For every test, check how much it is deviated with the sliders until the user finds the song
+    #appropriate for his/her mood
+    #General questions:
+        #Do you find Recommersion useful in a music stream platform?
+        #If yes, would you change something?

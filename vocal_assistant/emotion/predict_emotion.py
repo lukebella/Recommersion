@@ -1,4 +1,3 @@
-import os
 import torch
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
@@ -13,7 +12,6 @@ import matplotlib.pyplot as plt
 from torchmetrics.regression import ConcordanceCorrCoef
 #from torch.utils.tensorboard import SummaryWriter
 import numpy as np
-import torchaudio
 import random
 import librosa
 from sklearn.model_selection import KFold
@@ -131,6 +129,7 @@ class EmotionDataset(Dataset):
         #wav_data = self.only_vocals(wav_data)
         rand_augmenter = int(random.random()*1000)
 
+        # Apply file augmentation randomly and occasionaly 
         if self.augmenter and (rand_augmenter%4==0):
             wav_data = self.augmenter.augment(wav_data)
 
@@ -498,11 +497,11 @@ def predict_emotion(model, device, processor, wav_data):
 def main():
     device = return_device()
     
-    pretrained_model = "facebook/wav2vec2-base"    #patrickvonplaten/wav2vec2_tiny_random_robust" #w2v2-L-robust-12
+    pretrained_model = "facebook/wav2vec2-base" 
     processor = Wav2Vec2Processor.from_pretrained(pretrained_model, attn_implementation="flash_attention_2")
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
 
-    muse = pd.read_pickle("data/MuSe_sample").sample(frac=1, random_state=42)#.reset_index(drop=True)
+    muse = pd.read_pickle("data/MuSe_sample").sample(frac=1, random_state=42)
     iemocap = pd.read_pickle("data/IEMOCAP_useful").sample(frac=1, random_state=42)
 
     df = pd.concat([iemocap, muse]).sample(frac=1, random_state=42)
