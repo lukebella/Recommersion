@@ -13,10 +13,12 @@ import pygame
 from scipy.spatial.distance import cosine
 from hover_interface.hover_text import HoverText
 
-
+# Appearence and default color
 ctk.set_appearance_mode("System")  
 ctk.set_default_color_theme("dark-blue")  
 
+
+# Functions used by the GUI
 class Functions:
     def __init__(self, callback):
         self.callback = callback
@@ -27,14 +29,7 @@ class Functions:
 
         threading.Thread(target=self.load_data).start()
 
-        
-    def get_model_from_name(self, name):
-        if name in self.d:
-            return self.d[name]
-        else:
-            raise ValueError(f"Unknown model name: {name}")
-
-
+    # Loading data parallely
     def load_data(self):
         self.device = return_device()
         self.custom_model, self.custom_processor = load_trained_model(self.device, \
@@ -46,6 +41,7 @@ class Functions:
 
         self.callback()
 
+
     def start_microphone(self):
         self.vc.talk("What is your mood today?")
         return self.vc.take_vocal_command() 
@@ -53,7 +49,7 @@ class Functions:
     def process_audio_file(self, file):
         return self.vc.process_audio_file(file)
     
-
+    # Predicting dimensional values via the model name
     def predict_valence_arousal(self, file, model):
         print("Using model:", model)
         d = {
@@ -63,6 +59,7 @@ class Functions:
         return d[model]
        
     
+    # Generating playlist via the selected distance
     def generate_playlist(self, dimensional, distance:str,  cut:int = 10):
         dist_dict = {
             "Euclidean": lambda x, y: np.linalg.norm(x-y),
@@ -89,6 +86,7 @@ class Recommersion(ctk.CTk):
         self.grid_columnconfigure((2, 3), weight=0)
         self.grid_rowconfigure((0, 1, 2, 3, 4), weight=1)
 
+        # Tool for managing songs reproduction
         self.mixer = pygame.mixer
         self.mixer.init()
         self.mixer.music.set_volume(0.5)
@@ -97,6 +95,8 @@ class Recommersion(ctk.CTk):
 
         self.current_song = pd.DataFrame([])
         self.paused = True
+        
+        # Class for display text while hovering any widget 
         self.hover_text = HoverText("hover_interface/widget_hover.txt")
         
         self.text_var = ctk.StringVar()
@@ -109,7 +109,8 @@ class Recommersion(ctk.CTk):
         self.initialize_functions()
         self.playlist_initialized = False
         self.poll_pygame_events()
-            
+        
+        # Frame and widget creations
         self.create_input_frame()
         self.create_playlist_frame()
         
@@ -120,6 +121,7 @@ class Recommersion(ctk.CTk):
         self.input_frame.grid_rowconfigure(9, weight=1)
         self.input_frame.grid_columnconfigure(2, weight=1)
 
+        # Voice Input
         self.logo_label = ctk.CTkLabel(self.input_frame, text="Voice Input", font=ctk.CTkFont(size=20, weight="bold"))
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
 
@@ -132,6 +134,7 @@ class Recommersion(ctk.CTk):
         self.text_label.bind("<Enter>", lambda event: self.hover_show(event, "text_label"))
         self.text_label.grid(row=1, column=1, padx=(10,20), pady=10, sticky="nsew")
 
+        # Model input
         self.model_label = ctk.CTkLabel(self.input_frame, text="Model:", font=("Arial", 16), anchor="w")
         self.model_label.grid(row=2, column=0, padx=20, pady=10)
 
@@ -143,6 +146,7 @@ class Recommersion(ctk.CTk):
         self.menu.bind("<Enter>", lambda event: self.hover_show(event, "menu"))
         self.model.trace_add("write", self.on_option_change)
 
+        # Parameters Input
         self.parameters_label = ctk.CTkLabel(self.input_frame, text="Parameters", font=ctk.CTkFont(size=20, weight="bold"))
         self.parameters_label.grid(row=3, column=0, padx=20, pady=(70, 10))
         self.cut_label = ctk.CTkLabel(self.input_frame, text="Number of Songs:", font=("Arial", 16), anchor="w")
@@ -164,6 +168,8 @@ class Recommersion(ctk.CTk):
         self.menu_distance.grid(row=5, column=1, padx=(10,60), pady=10)
         self.menu_distance.bind("<Enter>", lambda event: self.hover_show(event, "menu_distance"))
         self.distance.trace_add("write", self.on_option_change_distance)
+
+        # Instruction Textbpx
         self.instr_label = ctk.CTkLabel(self.input_frame, text = "Instructions",font=ctk.CTkFont(size=20, weight="bold"))
         self.instr_label.grid(row=7, column=0, padx=(20, 20), pady=(100, 10), sticky="w")
         self.textbox = ctk.CTkTextbox(self.input_frame, wrap = "word", height=150, width=300, font=ctk.CTkFont("italic", size=15))
@@ -179,6 +185,7 @@ class Recommersion(ctk.CTk):
         self.playlist_and_control_frame.grid_rowconfigure(6, weight=1)
         self.playlist_and_control_frame.grid_columnconfigure(1, weight=1)
 
+        # Playlist box
         self.playlist_label = ctk.CTkLabel(self.playlist_and_control_frame, text="Playlist", \
                                            font=ctk.CTkFont(size=20, weight="bold"), text_color="black")
         self.playlist_label.grid(row=0, column=1, padx=20, pady=(20, 5))
@@ -198,6 +205,7 @@ class Recommersion(ctk.CTk):
         self.playlist_box.bind('<<TreeviewSelect>>', self.play_in_the_box)
         self.playlist_box.bind("<Enter>", lambda event: self.hover_show(event, "playlist_box"))
 
+        # Dimensional Sliders
         self.adj_label = ctk.CTkLabel(self.playlist_and_control_frame, text="Emotional Adjustments", \
                                       font=ctk.CTkFont(size=20, weight="bold"), text_color="black")
         self.adj_label.grid(row=2, column=1, padx=20, pady=(30, 5), sticky = "w")
@@ -225,7 +233,8 @@ class Recommersion(ctk.CTk):
         
         self.recompute_playlist.grid(row=2, column=0, columnspan=2, padx=(150,100), pady=(50,30), sticky = "nsew")
         self.recompute_playlist.bind("<Enter>", lambda event: self.hover_show(event, "recompute_playlist"))
-              
+        
+        # Song and Control frames
         self.song_frame = ctk.CTkFrame(self.playlist_and_control_frame, width = 500, height=50, fg_color="SkyBlue2", bg_color="SkyBlue2")
         self.song_frame.grid(row=5, column=1, columnspan=4, padx=(0, 0), pady=(50,0), sticky="nsew")
         self.song_frame.bind("<Enter>", lambda event: self.hover_show(event, "song_frame"))
@@ -253,7 +262,7 @@ class Recommersion(ctk.CTk):
 
 
 
-
+    # Method for checking whether there are any other songs to be played automatically
     def poll_pygame_events(self):
         if self.playlist_initialized:
             if not (self.mixer.music.get_busy() or self.paused):
@@ -311,7 +320,8 @@ class Recommersion(ctk.CTk):
         print(playlist)
         self.after(0, lambda: self.update_playlist(playlist))
 
-
+    
+    # Trigger when Microphone button is pressed
     def start_microphone(self):
         if self.data_loaded:
             messagebox.showinfo("Microphone", "Microphone started! Please speak.")
@@ -331,6 +341,7 @@ class Recommersion(ctk.CTk):
             messagebox.showinfo("Microphone", "No songs to compute yet")
 
 
+    # Playlist creation or updating
     def update_playlist(self, playlist):
         
         self.playlist_box.delete(*self.playlist_box.get_children())  
@@ -357,6 +368,8 @@ class Recommersion(ctk.CTk):
         else:
             messagebox.showinfo("Recompute playlist", "No songs to compute yet")
 
+
+    # Song control's methods
 
     def _play(self, song):
         self.mixer.music.load(song['mp3_path'])
@@ -425,7 +438,7 @@ class Recommersion(ctk.CTk):
     def __del__(self):
         self.fade_out_and_exit()
         
-
+# Main
 if __name__ == "__main__":
     app = Recommersion()
     app.mainloop()

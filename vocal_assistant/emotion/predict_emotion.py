@@ -19,6 +19,8 @@ import librosa
 from sklearn.model_selection import KFold
 from pathlib import Path
 
+
+# Class for implementing audio augmentations
 class AudioAugmentation:
     def __init__(self, sample_rate=16000, noise_level=0.005, time_mask_param=30, freq_mask_param=15):
         self.sample_rate = sample_rate
@@ -29,11 +31,6 @@ class AudioAugmentation:
     def add_background_noise(self, waveform):
         noise = torch.randn_like(torch.from_numpy(waveform)) * self.noise_level
         return torch.add(torch.from_numpy(waveform), noise)
-
-    def time_stretch(self, waveform, rate=1.1):
-        spectrogram = torchaudio.transforms.Spectrogram()(waveform)
-        stretched = torchaudio.transforms.TimeStretch()(spectrogram)
-        return torch.tensor(stretched)
 
     def pitch_shift(self, waveform):
         return librosa.effects.pitch_shift(y=waveform, sr=self.sample_rate, n_steps=random.randint(-6, 6))
@@ -50,7 +47,7 @@ class AudioAugmentation:
         return waveform
 
 
-
+# Constructing dataset
 class EmotionDataset(Dataset):
     def __init__(self, df, processor, augmenter, attention_mask):
         self.df = df
@@ -66,7 +63,7 @@ class EmotionDataset(Dataset):
         return len(self.df)
 
 
-    def only_vocals(self, waveform):
+    """def only_vocals(self, waveform):
         S_full, phase = librosa.magphase(librosa.stft(waveform))
         S_filter = librosa.decompose.nn_filter(S_full,
                                         aggregate=np.median,
@@ -82,20 +79,16 @@ class EmotionDataset(Dataset):
                                     power=power)
         
         S_foreground = mask_v * S_full
-        return librosa.istft(S_foreground * phase)
+        return librosa.istft(S_foreground * phase)"""
 
 
-
+    # Normalize waveform between 0 and 1
     def normalize_waveform(self, wav_data):
-        """
-        Normalize audio waveform to the range [-1, 1].
-        Handles both torch.Tensor and numpy.ndarray.
-        """
         if isinstance(wav_data, torch.Tensor):
-            wav_data = wav_data.float()  # Ensure float type for PyTorch tensors
+            wav_data = wav_data.float()  
         elif isinstance(wav_data, np.ndarray):
-            wav_data = wav_data.astype(np.float32)  # Ensure float32 type for NumPy arrays
-            wav_data = torch.from_numpy(wav_data)  # Convert to torch.Tensor for consistency
+            wav_data = wav_data.astype(np.float32)  
+            wav_data = torch.from_numpy(wav_data)  
         
         max_val = wav_data.abs().max()
         if max_val > 0:
@@ -103,7 +96,7 @@ class EmotionDataset(Dataset):
         
         return wav_data.numpy() if isinstance(wav_data, torch.Tensor) else wav_data
     
-
+    # Method for retrieving mel coefficients
     @staticmethod
     def get_mel_spectrogram(input_values):
         #hop_length = int(0.012 * self.sample_rate)  
@@ -113,7 +106,6 @@ class EmotionDataset(Dataset):
         mel_spectrogram = librosa.power_to_db(mel_spectrogram, ref=np.max)
         mel_spectrogram_derivative_1 = librosa.feature.delta(mel_spectrogram, order=1)
         mel_spectrogram_derivative_2 = librosa.feature.delta(mel_spectrogram, order=2)
-
     
         mel_spectrogram = librosa.util.normalize(mel_spectrogram)
         mel_spectrogram_derivative_1 = librosa.util.normalize(mel_spectrogram_derivative_1)
@@ -124,7 +116,7 @@ class EmotionDataset(Dataset):
         return torch.tensor(mel_spectrogram_stack, dtype=torch.float32)
 
 
-    
+    # Padding of max_seconds and creation of the batch
     def __getitem__(self, idx):
         wav_data = self.df.iloc[idx]["wav_file"]  
         valence = self.df.iloc[idx]["Valence"]
@@ -146,15 +138,11 @@ class EmotionDataset(Dataset):
                                 truncation = True, max_length = max_length, do_normalize = True,\
                                 return_attention_mask = self.attention_mask)
         
-        #print(inputs['input_values'])
         input_values = inputs['input_values'].squeeze(0)
 
         inputs['input_values'] = input_values
         inputs['mel_spectrogram'] = EmotionDataset.get_mel_spectrogram(input_values)
-        #print("MEL SIZE",inputs['mel_spectrogram'].size())
-
         inputs['labels'] = torch.tensor([valence, arousal], dtype=torch.float32)
-
 
         return inputs
 
@@ -168,20 +156,18 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         self.config = config
         self.wav2vec2 = Wav2Vec2Model(self.config)
         
+        # Freezing the CNN extractors
         for param in self.wav2vec2.feature_extractor.parameters():
             param.requires_grad = False
         
         for param in self.wav2vec2.feature_projection.parameters():
             param.requires_grad = False
         
-        # Allow fine-tuning of transformer layers
+        # Fine-tuning of transformer layers
         for param in self.wav2vec2.encoder.parameters():
             param.requires_grad = True
-
-        """self.rnn = nn.LSTM(input_size= 4528, hidden_size=2,\
-                           batch_first=True, bidirectional=False)"""
         
-        
+        # Mel CNN
         self.mel_cnn = nn.Sequential(
             nn.Conv2d(3, 4, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
             nn.ReLU(),
@@ -192,13 +178,14 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
             nn.Flatten()
         )
 
+        # BLSTM
         self.rnn = nn.LSTM(input_size= 7008, hidden_size=config.hidden_size, num_layers=2, \
                            batch_first=True, bidirectional=True, dropout=0.3)
-        
         self.dropout = nn.Dropout(0.5)
+
+        # Final Regressor
         self.regressor = nn.Linear(config.hidden_size*2, config.num_labels)
         #self.act = nn.Tanh()
-
         self.init_weights()
 
 
@@ -214,10 +201,7 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
     
 
         # Combine features
-        # print(mel_features.size())
-        # print(hidden_states.size())
         combined_features = torch.cat((hidden_states, mel_features), dim=1)
-        #print(combined_features.size())
         #combined_features = self.dropout(combined_features)
         temp,_ = self.rnn(combined_features)
         temp = self.dropout(temp)
@@ -230,7 +214,6 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
 #writer = SummaryWriter("runs/emotion_model")
 
 def log_embedding_norms(model, epoch):
-    """ Log the L2 norm degli embedding del modello."""
     for name, param in model.named_parameters():
         if "wav2vec2.encoder" in name and param.requires_grad:
             embedding_norm = param.norm(2).item()
@@ -238,13 +221,13 @@ def log_embedding_norms(model, epoch):
 
 
 def log_gradient_norms(model, epoch):
-    """ Log la norma dei gradienti durante l'addestramento."""
     for name, param in model.named_parameters():
         if param.grad is not None:
             grad_norm = param.grad.norm(2).item()
             #.add_scalar(f"Gradient Norm/{name}", grad_norm, epoch)
 
 
+# Saving best epoch model 
 def save_checkpoint(model, optimizer, epoch, filename):
     checkpoint = {
         'model_state_dict': model.state_dict(),
@@ -255,11 +238,13 @@ def save_checkpoint(model, optimizer, epoch, filename):
     torch.save(checkpoint, filename)
     print(f"Checkpoint saved at epoch {epoch + 1}")
 
-    
+
+# Dynamically set device
 def return_device():
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Dynamically set device
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu") 
 
 
+# CCC loss
 def ccc_loss(gold, pred):
     ccc = ConcordanceCorrCoef().to("cuda")
     coeff = ccc(gold, pred)
@@ -280,15 +265,13 @@ def batch_values(batch, device):
 def compute_loss(model, device, batch, alpha, beta):
     input_values, labels,  mel_spectrogram = batch_values(batch, device)  #
 
-    #For small batch sizes where variance could be very low
+    # For small batch sizes where variance could be very low
     if labels[:, 0].std() < 1e-7 or labels[:, 1].std() < 1e-7:
         print("Value equal to 0 or invariance in labels!")
         return None
     
     _,logits = model(input_values, mel_spectrogram)
 
-    #_, logits = model(input_values=input_values)#, attention_mask=attention_mask)
-    # Example in validation loop
     print("Predictions:", logits[:8].detach().cpu().numpy())
     print("True labels:", labels[:8].detach().cpu().numpy())
 
@@ -319,12 +302,12 @@ def plot_gradients(gradients, layer_name):
         plt.savefig("gradients.png")
 
 
+# Training function
 def train(model, device, train_dataloader, test_dataloader, \
           epochs=3, alpha=0.5, beta=0.5, checkpoint_path = "custom_model.pth", patience_es = 15):
     """
     Train the model using CCC loss for valence and arousal.
     """
-    #TODO try to refactor with Accelerate (HuggingFace)
     print("****TRAINING****")
     train_losses = []
     val_losses = []
@@ -391,7 +374,7 @@ def train(model, device, train_dataloader, test_dataloader, \
     #writer.close()
     plot_losses(train_losses, val_losses)
 
-#CV
+# CV
 def cross_validate_alpha_beta(device, dataset, alpha_beta_values, config, k=5, epochs=12):
    
     kfold = KFold(n_splits=k, shuffle=True, random_state=42)
@@ -477,7 +460,7 @@ def plot_losses(train_losses, val_losses, filename = "plots/loss_plot_trial.png"
     # Save the plot to a file
     
 
-
+# Load Checkpoint
 def load_trained_model(device, checkpoint_path, pretrained_model):
     config = Wav2Vec2Config.from_pretrained(pretrained_model)
     model = EmotionModel(config).to(device)
@@ -493,6 +476,7 @@ def load_trained_model(device, checkpoint_path, pretrained_model):
     return model, processor
 
 
+# Prediction
 def predict_emotion(model, device, processor, wav_data):
     model.eval()
     inputs = processor(wav_data, sampling_rate=16000, return_tensors="pt", padding = 'max_length', \
@@ -560,10 +544,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-
 #remember to do a scatterplot for valence and arousal like paper https://iopscience.iop.org/article/10.1088/1742-6596/1896/1/012004/pdf
-#when the user will test the model, try to:
-# - mix the two dataset for training (full_data)
-# - train with iemocap and test with muse
-# - train with muse and test with iemocap
-# - Make in the interface a selector for these three different models and check which is the most useful 

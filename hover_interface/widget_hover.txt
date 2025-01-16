@@ -1,6 +1,6 @@
 general=Welcome to Recommersion! To get started, record your voice with "Speak Emotion" button above or adjust the valence and arousal sliders parameters on the right. If you don't know how this software works, hover the elements to read the instructions here!
-valence_slider=Adjust the valence of music! Slide this widget from sad (low) to happy (high).
-arousal_slider=Adjust the arousal of music! Slide this widget from calm (low) to intense (high).
+valence_slider=Adjust the valence of music! Slide this widget from sad (lowest = 0.0) to happy (highest = 1.0).
+arousal_slider=Adjust the arousal of music! Slide this widget from calm (lowest = 0.0) to intense (highest = 1.0).
 volume_slider=Adjust the volume of the song.
 microphone=Press here for recording your voice!
 text_label=If comprehensible, Recommersion prints what you've said!

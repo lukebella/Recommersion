@@ -29,7 +29,8 @@ class VocalAssistant:
     def take_vocal_command(self) -> str:
         command = ""  # Initialize command with an empty string
         try:
-            with sr.Microphone() as source:  # Use the microphone
+            # Use the microphone
+            with sr.Microphone() as source:  
                 print("Listening....")
             
                 # Use microphone as source and calling speech recognition to listen
@@ -51,14 +52,12 @@ class VocalAssistant:
             # Load the audio file
             with sr.AudioFile(file_path) as source:
                 print(f"Processing the file: {file_path}")
-                audio_data = self.listener.record(source)  # Capture the entire audio file
+                audio_data = self.listener.record(source)  
                 wav_file = audio_data.get_wav_data()
                 audio, _ = librosa.load(io.BytesIO(wav_file), sr=16000)
-                # Print sample rate and the shape of the numpy array
-                #print("Sample rate:", sample_rate)
                 print("Numpy array shape:", audio.shape)
-                # Recognize the speech in the audio file
-                command = self.listener.recognize_google(audio_data)  # Google Speech API
+                # Recognize the speech in the audio file with Google Speech API
+                command = self.listener.recognize_google(audio_data) 
                 print(f"Recognized speech: {command.lower()}")
         except Exception as e:
             print(f"Error occurred: {e}")
