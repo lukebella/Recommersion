@@ -30,6 +30,10 @@ For example, an user might say: "This song feels too happy" and control the vale
    ```bash
    $ pip install requirements.txt
    ```
+5. Run 
+   ```bash 
+   $ python recommersion.py
+   ```
 
 ## Datasets
 
