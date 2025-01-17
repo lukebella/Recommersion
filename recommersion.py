@@ -375,7 +375,7 @@ class Recommersion(ctk.CTk):
             new_val = dimensional[0] * self.valence_slider.cget("to")
             new_ar = dimensional[1] * self.arousal_slider.cget("to")
             self.after(0, lambda: self.valence_slider.set(new_val))
-            self.after(0, lambda: self.arousal_slider.set())
+            self.after(0, lambda: self.arousal_slider.set(new_ar))
             self.after(0, lambda: self.update_valence_value(new_val))
             self.after(0, lambda: self.update_arousal_value(new_ar))
             print("after setting")
