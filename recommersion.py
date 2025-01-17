@@ -12,6 +12,7 @@ import pickle
 import pygame
 from scipy.spatial.distance import cosine
 from hover_interface.hover_text import HoverText
+from PIL import Image
 
 # Appearence and default color
 ctk.set_appearance_mode("System")  
@@ -79,7 +80,7 @@ class Recommersion(ctk.CTk):
         super().__init__()
 
         self.title("Recommersion - Emotion-Based Music Recommendation")
-        self.geometry(f"{1300}x{850}")
+        self.geometry(f"{1500}x{950}")
         self.resizable(True, True)
         
         self.grid_columnconfigure(1, weight=1)
@@ -123,59 +124,73 @@ class Recommersion(ctk.CTk):
 
         # Voice Input
         self.logo_label = ctk.CTkLabel(self.input_frame, text="Voice Input", font=ctk.CTkFont(size=20, weight="bold"))
-        self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
+        self.logo_label.grid(row=0, column=0, padx=10, pady=(20, 10))
 
-        self.microphone = ctk.CTkButton(self.input_frame, text="🎤 Speak Emotion", command=self.start_microphone)
-        self.microphone.grid(row=1, column=0, padx=20, pady=10)
+        self.microphone = ctk.CTkButton(self.input_frame, text="🎤 Speak Emotion", command=self.start_microphone, \
+                                        hover_color="goldenrod4")
+        self.microphone.grid(row=1, column=1, padx=(10,20), pady=10, sticky="nsew")
         self.microphone.bind("<Enter>", lambda event: self.hover_show(event, "microphone"))
         self.speech_var = ctk.StringVar()
         self.speech_var.set("Your speech text:")
         self.text_label = ctk.CTkLabel(self.input_frame, text=self.speech_var.get(), textvariable=self.speech_var, font=("Italic", 16), anchor="w")
         self.text_label.bind("<Enter>", lambda event: self.hover_show(event, "text_label"))
-        self.text_label.grid(row=1, column=1, padx=(10,20), pady=10, sticky="nsew")
+        self.text_label.grid(row=1, column=0, padx=10, pady=10)
 
         # Model input
         self.model_label = ctk.CTkLabel(self.input_frame, text="Model:", font=("Arial", 16), anchor="w")
-        self.model_label.grid(row=2, column=0, padx=20, pady=10)
+        self.model_label.grid(row=2, column=0, padx=10, pady=10)
 
         self.MODEL_OPTIONS = ["Audeering", "Custom"]
-        self.model = ctk.StringVar(value=self.MODEL_OPTIONS[0])  # Set the default selection
+        self.model = ctk.StringVar(value=self.MODEL_OPTIONS[0]) 
         self.menu = ctk.CTkOptionMenu(self.input_frame, values = self.MODEL_OPTIONS, \
-                                      variable = self.model, command = self.on_option_change)
-        self.menu.grid(row=2, column=1, padx=(10,60), pady=10)
+                                      variable = self.model, command = self.on_option_change, \
+                                      button_hover_color="goldenrod4")
+        self.menu.grid(row=2, column=1, padx=(10,20), pady=10, sticky="nsew")
         self.menu.bind("<Enter>", lambda event: self.hover_show(event, "menu"))
         self.model.trace_add("write", self.on_option_change)
 
         # Parameters Input
         self.parameters_label = ctk.CTkLabel(self.input_frame, text="Parameters", font=ctk.CTkFont(size=20, weight="bold"))
-        self.parameters_label.grid(row=3, column=0, padx=20, pady=(70, 10))
+        self.parameters_label.grid(row=3, column=0, padx=10, pady=(70, 10))
         self.cut_label = ctk.CTkLabel(self.input_frame, text="Number of Songs:", font=("Arial", 16), anchor="w")
-        self.cut_label.grid(row=4, column=0, padx=20, pady=10)
+        self.cut_label.grid(row=4, column=0, padx=10, pady=10)
 
-        self.cut_text = ctk.StringVar(value="10")  # Default value
+        self.cut_text = ctk.StringVar(value="10")  
         self.cut = ctk.CTkEntry(self.input_frame, placeholder_text=self.cut_text.get(), textvariable=self.cut_text)
-        self.cut.grid(row=4, column=1, padx=(10,60), pady=10)
+        self.cut.grid(row=4, column=1, padx=(10,20), pady=10, sticky="nsew")
         self.cut.bind("<Enter>", lambda event: self.hover_show(event, "cut"))
         self.cut_text.trace_add("write", self.on_text_change)
 
         self.distance_label = ctk.CTkLabel(self.input_frame, text="Distance", font=("Arial", 16), anchor="w")
-        self.distance_label.grid(row=5, column=0, padx=20, pady=10)
+        self.distance_label.grid(row=5, column=0, padx=10, pady=10)
 
         self.DISTANCE_OPTIONS = ["Euclidean", "Cosine"]
-        self.distance = ctk.StringVar(value=self.DISTANCE_OPTIONS[0])  # Set the default selection
+        self.distance = ctk.StringVar(value=self.DISTANCE_OPTIONS[0])  
         self.menu_distance = ctk.CTkOptionMenu(self.input_frame, values = self.DISTANCE_OPTIONS, \
-                                               variable=self.distance, command = self.on_option_change_distance)
-        self.menu_distance.grid(row=5, column=1, padx=(10,60), pady=10)
+                                               variable=self.distance, command = self.on_option_change_distance, \
+                                               button_hover_color="goldenrod4")
+        self.menu_distance.grid(row=5, column=1, padx=(10,20), pady=10, sticky="nsew")
         self.menu_distance.bind("<Enter>", lambda event: self.hover_show(event, "menu_distance"))
         self.distance.trace_add("write", self.on_option_change_distance)
 
-        # Instruction Textbpx
+        # Instruction Textbox
         self.instr_label = ctk.CTkLabel(self.input_frame, text = "Instructions",font=ctk.CTkFont(size=20, weight="bold"))
         self.instr_label.grid(row=7, column=0, padx=(20, 20), pady=(100, 10), sticky="w")
-        self.textbox = ctk.CTkTextbox(self.input_frame, wrap = "word", height=150, width=300, font=ctk.CTkFont("italic", size=15))
+        self.textbox = ctk.CTkTextbox(self.input_frame, wrap = "word", height=200, width=200, font=ctk.CTkFont("italic", size=15))
         self.textbox.insert(1.0, self.hover_text.get_widget("general"))
         self.textbox.grid(row=8, column=0, padx=(20, 20), pady=(20, 20), sticky="nsew")
-        
+
+        # Quadrant frame
+        self.quadrant_label = ctk.CTkLabel(self.input_frame, text = "Emotion Quadrants",font=ctk.CTkFont(size=20, weight="bold"))
+        self.quadrant_label.grid(row=7, column=1, padx=(20, 20), pady=(100, 10), sticky="w")
+        self.quadrant_frame = ctk.CTkFrame(self.input_frame, height=500, width=340, fg_color="white")
+        self.quadrant_frame.grid(row=8, column=1, padx=(5, 10), pady=(10, 10), sticky="w")
+        self.quadrant_frame.bind("<Enter>", lambda event: self.hover_show(event, "quadrant_frame"))
+        self.image = ctk.CTkImage(light_image = Image.open("hover_interface/emotion_quadrant.drawio.png"),\
+                                  dark_image = Image.open("hover_interface/emotion_quadrant.drawio.png"),
+                                  size=(500,340)) 
+        self.label_image = ctk.CTkLabel(self.quadrant_frame, image=self.image, text="")
+        self.label_image.grid(row=0, column=0, padx=(5, 5), pady=(5, 5))
         self.after(2000, self.update_text)
 
 
@@ -214,21 +229,33 @@ class Recommersion(ctk.CTk):
         self.adjustment_frame.grid_columnconfigure(0, weight=0)  # Label column
         self.adjustment_frame.grid_columnconfigure(1, weight=1)  # Slider column
         self.adjustment_frame.grid_columnconfigure(2, weight=0)  # Emoji column
+        self.adjustment_frame.grid_columnconfigure(3, weight=0)  # Indicator column
         self.adjustment_frame.grid_rowconfigure(3, weight=1)
+
         ctk.CTkLabel(self.adjustment_frame, text="Valence: 😞", text_color="black",font=ctk.CTkFont(size=15, weight="bold"))\
                     .grid(row=0, column=0, padx=0, pady=10)                                                                                         
-        self.valence_slider = ctk.CTkSlider(self.adjustment_frame, from_=0, to=1000, orientation="horizontal", width = 500 )
+        self.valence_slider = ctk.CTkSlider(self.adjustment_frame, from_=0, to=1000, orientation="horizontal", width = 500, command=self.update_valence_value)
         self.valence_slider.grid(row=0, column=1, padx=0, pady=10, sticky = 'ew')
         self.valence_slider.bind("<Enter>", lambda event: self.hover_show(event, "valence_slider"))
         ctk.CTkLabel(self.adjustment_frame, text="😁", text_color="black", font=ctk.CTkFont(size=15, weight="bold"))\
                     .grid(row=0, column=2, padx=(10,20), pady=10, sticky = 'nsew')
+        self.valence_value = tk.StringVar(value=f"Value: {self.valence_slider.get()/1000:.4f}")
+        ctk.CTkLabel(self.adjustment_frame, textvariable=self.valence_value, text_color="black", font=ctk.CTkFont(size=15, weight="bold"))\
+                    .grid(row=0, column=3, padx=(10,20), pady=10, sticky = 'nsew')
+        
+
         ctk.CTkLabel(self.adjustment_frame, text="Arousal: 🧘🏼", text_color="black", font=ctk.CTkFont(size=15, weight="bold"))\
                     .grid(row=1, column=0, padx=10, pady=10)
-        self.arousal_slider = ctk.CTkSlider(self.adjustment_frame, from_=0, to=1000, orientation="horizontal", width = 500)
+        self.arousal_slider = ctk.CTkSlider(self.adjustment_frame, from_=0, to=1000, orientation="horizontal", width = 500, command=self.update_arousal_value)
         self.arousal_slider.grid(row=1, column=1, padx=0, pady=10, sticky = 'ew')
         self.arousal_slider.bind("<Enter>", lambda event: self.hover_show(event, "arousal_slider"))
         ctk.CTkLabel(self.adjustment_frame, text="🔥", text_color="black", font=ctk.CTkFont(size=15, weight="bold"))\
                     .grid(row=1, column=2, padx=(10,20), pady=10, sticky='nsew')
+        self.arousal_value = tk.StringVar(value=f"Value: {self.arousal_slider.get()/1000:.4f}")
+        ctk.CTkLabel(self.adjustment_frame, textvariable=self.arousal_value, text_color="black", font=ctk.CTkFont(size=15, weight="bold"))\
+                    .grid(row=1, column=3, padx=(10,20), pady=10, sticky = 'nsew')
+        
+
         self.recompute_playlist = ctk.CTkButton(self.adjustment_frame, text="Recompute Playlist", command=self.adjust_recommendation, width = 200)
         
         self.recompute_playlist.grid(row=2, column=0, columnspan=2, padx=(150,100), pady=(50,30), sticky = "nsew")
@@ -288,6 +315,14 @@ class Recommersion(ctk.CTk):
         self.textbox.delete(1.0, ctk.END)  
         self.textbox.insert(ctk.END, text)
     
+    def update_valence_value(self, value):
+        # Update the Valence StringVar with the slider's value
+        self.valence_value.set(f"Value: {float(value)/1000:.4f}")  
+    
+    def update_arousal_value(self, value):
+        # Update the Arousal StringVar with the slider's value
+        self.arousal_value.set(f"Value: {float(value)/1000:.4f}")  
+    
     def on_text_change(self, *args):
         print(f"Current text in Entry: {self.cut_text.get()}")
 
@@ -333,8 +368,12 @@ class Recommersion(ctk.CTk):
                                                                  model = self.model.get())
             print(dimensional)
             print("before setting")
-            self.after(0, lambda: self.valence_slider.set(dimensional[0] * self.valence_slider.cget("to")))
-            self.after(0, lambda: self.arousal_slider.set(dimensional[1] * self.arousal_slider.cget("to")))
+            new_val = dimensional[0] * self.valence_slider.cget("to")
+            new_ar = dimensional[1] * self.arousal_slider.cget("to")
+            self.after(0, lambda: self.valence_slider.set(new_val))
+            self.after(0, lambda: self.arousal_slider.set())
+            self.after(0, lambda: self.update_valence_value(new_val))
+            self.after(0, lambda: self.update_arousal_value(new_ar))
             print("after setting")
             self.compute_playlist(dimensional)
         else:
@@ -446,6 +485,7 @@ if __name__ == "__main__":
 
 
 #Tests:
+    #Try 3 emotion status
     #For Precision
     #Cut = 5
         #Custom/Euclidean

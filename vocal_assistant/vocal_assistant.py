@@ -37,7 +37,7 @@ class VocalAssistant:
                 voice = self.listener.listen(source)
                 wav_file = voice.get_wav_data()
                 command = self.listener.recognize_google(voice)
-                command = command.lower()
+                command = f"\"{command.lower()}\""
                 print(command)
         except Exception as e:
             print(f"Error occurred: {e}")
