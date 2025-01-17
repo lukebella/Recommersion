@@ -127,7 +127,7 @@ class Recommersion(ctk.CTk):
         self.logo_label.grid(row=0, column=0, padx=10, pady=(20, 10))
 
         self.microphone = ctk.CTkButton(self.input_frame, text="🎤 Speak Emotion", command=self.start_microphone, \
-                                        hover_color="goldenrod4", fg_color="purple4")
+                                        fg_color="SlateBlue4")
         self.microphone.grid(row=1, column=1, padx=(10,20), pady=10, sticky="nsew")
         self.microphone.bind("<Enter>", lambda event: self.hover_show(event, "microphone"))
         self.speech_var = ctk.StringVar()
@@ -144,7 +144,7 @@ class Recommersion(ctk.CTk):
         self.model = ctk.StringVar(value=self.MODEL_OPTIONS[0]) 
         self.menu = ctk.CTkOptionMenu(self.input_frame, values = self.MODEL_OPTIONS, \
                                       variable = self.model, command = self.on_option_change, \
-                                      fg_color="purple4")
+                                      fg_color="SlateBlue4", dropdown_fg_color="SlateBlue4")
         self.menu.grid(row=2, column=1, padx=(10,20), pady=10, sticky="nsew")
         self.menu.bind("<Enter>", lambda event: self.hover_show(event, "menu"))
         self.model.trace_add("write", self.on_option_change)
@@ -168,7 +168,7 @@ class Recommersion(ctk.CTk):
         self.distance = ctk.StringVar(value=self.DISTANCE_OPTIONS[0])  
         self.menu_distance = ctk.CTkOptionMenu(self.input_frame, values = self.DISTANCE_OPTIONS, \
                                                variable=self.distance, command = self.on_option_change_distance, \
-                                               fg_color="purple4", dropdown_fg_color="purple4")
+                                               fg_color="SlateBlue4", dropdown_fg_color="SlateBlue4")
         self.menu_distance.grid(row=5, column=1, padx=(10,20), pady=10, sticky="nsew")
         self.menu_distance.bind("<Enter>", lambda event: self.hover_show(event, "menu_distance"))
         self.distance.trace_add("write", self.on_option_change_distance)
@@ -204,8 +204,8 @@ class Recommersion(ctk.CTk):
         self.playlist_label = ctk.CTkLabel(self.playlist_and_control_frame, text="Playlist", \
                                            font=ctk.CTkFont(size=20, weight="bold"), text_color="white")
         self.playlist_label.grid(row=0, column=1, padx=20, pady=(18, 4))
-        self.playlist_frame = ctk.CTkScrollableFrame(self.playlist_and_control_frame, fg_color="white", height =260)
-        self.playlist_frame.grid(row=1, column=1, padx=(20, 20), pady=(20, 20), sticky="nsew")
+        self.playlist_frame = ctk.CTkScrollableFrame(self.playlist_and_control_frame, fg_color="white", width=700, height =260)
+        self.playlist_frame.grid(row=1, column=1, padx=(20, 20), pady=(20, 20), sticky="w")
         self.playlist_frame.grid_rowconfigure(0, weight=1)
         self.playlist_box = ttk.Treeview(self.playlist_frame, selectmode=tk.BROWSE, height=15)
         self.playlist_box.grid(row=0, column=0, padx=(1, 1), pady=(1, 1), sticky="ew")
@@ -260,14 +260,14 @@ class Recommersion(ctk.CTk):
         
 
         self.recompute_playlist = ctk.CTkButton(self.adjustment_frame, text="Recompute Playlist", command=self.adjust_recommendation, \
-                                                width = 200, fg_color="purple4")
+                                                width = 200, fg_color="SlateBlue4")
         
         self.recompute_playlist.grid(row=2, column=0, columnspan=2, padx=(200,20), pady=(40,30), sticky = "nsew")
         self.recompute_playlist.bind("<Enter>", lambda event: self.hover_show(event, "recompute_playlist"))
         
         # Song and Control frames
         self.song_frame = ctk.CTkFrame(self.playlist_and_control_frame, width = 500, height=50, fg_color="SlateBlue3")
-        self.song_frame.grid(row=5, column=1, columnspan=4, padx=(20, 20), pady=(50,0), sticky="nsew")
+        self.song_frame.grid(row=5, column=1, columnspan=4, padx=(20, 20), pady=(45,0), sticky="nsew")
         self.song_frame.bind("<Enter>", lambda event: self.hover_show(event, "song_frame"))
         self.controls_frame = ctk.CTkFrame(self.playlist_and_control_frame, width = 500, height=60, fg_color="SlateBlue4")
         self.controls_frame.grid(row=6, column=1, columnspan=4, padx=(20, 20), pady=(0,40), sticky="nsew")
