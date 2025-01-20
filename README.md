@@ -9,6 +9,7 @@ The custom SER model integrates two parallel processing approaches on a combinat
 The combined features from these parallel approaches are processed using a **Bidirectional Long Short-Term Memory (BLSTM)** architecture for capturing temporal dependencies. A final regression layer predicts emotional dimensions (valence and arousal), enabling song recommendations through either Euclidean or Cosine similarity.
 
 ## Architecture
+<img src="./hover_interface/architecture.png" alt="Architecture" width="100%">
 
 ## Overview
 **Recommersion** is a vocal assistant capable of contextualizing a specific situation based on user-provided inputs influenced by their emotional state. Its features are seamlessly integrated into a **GUI** (shown below), where users can access instructions by hovering over the interactive widgets. The system processes the user's input through a sophisticated Recommender System, which uses a Speech Emotion Recognition (SER) model and a given similarity (Euclidean or Cosine) to suggest an optimal number of tracks tailored to the given context. Once the recommendation is generated and a musical fragment begins playing, users gain access to a proper interface for valence and arousal and song's reproduction real-time adjustments.
@@ -28,7 +29,7 @@ For example, an user might say: "This song feels too happy" and control the vale
    ```
 4. Install the imported libraries using:
    ```bash
-   $ pip install requirements.txt
+   $ pip install -r requirements.txt
    ```
 5. Run 
    ```bash 
