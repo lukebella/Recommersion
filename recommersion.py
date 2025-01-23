@@ -13,6 +13,10 @@ import pygame
 from scipy.spatial.distance import cosine
 from hover_interface.hover_text import HoverText
 from PIL import Image
+import validators
+import tempfile 
+import requests
+
 
 # Appearence and default color
 ctk.set_appearance_mode("System")  
@@ -36,10 +40,9 @@ class Functions:
         self.custom_model, self.custom_processor = load_trained_model(self.device, \
                                                                       self.custom_model_name, self.custom_pretrained_model)
         
-        with open("./data/Songs_path", "rb") as f:
+        with open("./data/SpotiGEM_songs", "rb") as f:
             self.data = pickle.load(f)
         print("Songs loaded!")
-
         self.callback()
 
 
@@ -58,6 +61,21 @@ class Functions:
             "Custom": predict_emotion(self.custom_model, self.device, self.custom_processor, file)[0].tolist()
         }
         return d[model]
+    
+    def url_to_tempfile(self, data:pd.DataFrame):
+        def is_url(string):
+            return validators.url(string)
+        
+        for i,value in data["mp3_path"].items():
+            if is_url(value):
+                x = requests.get(value)
+                if x.status_code == 200: 
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
+                        temp_file.write(x.content)
+                        data.at[i,"mp3_path"] = temp_file.name 
+                        
+                        print(f"Temporary file created: {temp_file.name }")
+        return data
        
     
     # Generating playlist via the selected distance
@@ -72,7 +90,10 @@ class Functions:
                             "Arousal": self.data["Arousal"],\
                             "title":self.data["title"], "artist": self.data["artist"], "mp3_path":self.data["mp3_path"]})
 
-        return songs_list.sort_values(by="dist")[:cut]
+        
+        sliced_playlist = songs_list.sort_values(by="dist")[:cut]
+        print(self.url_to_tempfile(sliced_playlist))
+        return self.url_to_tempfile(sliced_playlist)
 
 
 class Recommersion(ctk.CTk):
@@ -80,7 +101,7 @@ class Recommersion(ctk.CTk):
         super().__init__()
 
         self.title("Recommersion - Emotion-Based Music Recommendation")
-        self.geometry(f"{1550}x{950}")
+        self.geometry(f"{1100}x{600}")
         self.resizable(True, True)
         
         self.grid_columnconfigure(1, weight=1)
@@ -506,3 +527,7 @@ if __name__ == "__main__":
     #General questions:
         #Do you find Recommersion useful in a music stream platform?
         #If yes, would you change something?
+    
+    #Calculate distance of the first song based on the request
+    #check spotify dataset
+    #check to map genre in songs

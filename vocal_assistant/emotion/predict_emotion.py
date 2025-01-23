@@ -17,6 +17,11 @@ import librosa
 from sklearn.model_selection import KFold
 from pathlib import Path
 
+#CV
+# half in grid search scikit learn
+# bayesan opt: smac3
+#Calcola loss L1/L2/R^2 in test set 
+
 
 # Class for implementing audio augmentations
 class AudioAugmentation:
@@ -29,6 +34,8 @@ class AudioAugmentation:
     def add_background_noise(self, waveform):
         noise = torch.randn_like(torch.from_numpy(waveform)) * self.noise_level
         return torch.add(torch.from_numpy(waveform), noise)
+    
+    # sovrapposizione tra due file di input
 
     def pitch_shift(self, waveform):
         return librosa.effects.pitch_shift(y=waveform, sr=self.sample_rate, n_steps=random.randint(-6, 6))
