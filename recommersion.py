@@ -62,6 +62,7 @@ class Functions:
         }
         return d[model]
     
+    
     def url_to_tempfile(self, data:pd.DataFrame):
         def is_url(string):
             return validators.url(string)
@@ -75,6 +76,7 @@ class Functions:
                         data.at[i,"mp3_path"] = temp_file.name 
                         
                         print(f"Temporary file created: {temp_file.name }")
+        print(data["id"])
         return data
        
     
@@ -92,16 +94,16 @@ class Functions:
 
         
         sliced_playlist = songs_list.sort_values(by="dist")[:cut]
-        print(self.url_to_tempfile(sliced_playlist))
         return self.url_to_tempfile(sliced_playlist)
 
 
 class Recommersion(ctk.CTk):
     def __init__(self):
         super().__init__()
-
+        self.window_width = self.winfo_screenwidth()/1.5
+        self.window_height = self.winfo_screenheight()/1.45
         self.title("Recommersion - Emotion-Based Music Recommendation")
-        self.geometry(f"{1100}x{600}")
+        self.geometry(f"{self.window_width}x{self.window_height}")
         self.resizable(True, True)
         
         self.grid_columnconfigure(1, weight=1)
@@ -197,19 +199,19 @@ class Recommersion(ctk.CTk):
         # Instruction Textbox
         self.instr_label = ctk.CTkLabel(self.input_frame, text = "Instructions",font=ctk.CTkFont(size=20, weight="bold"))
         self.instr_label.grid(row=7, column=0, padx=(20, 20), pady=(120, 10), sticky="w")
-        self.textbox = ctk.CTkTextbox(self.input_frame, wrap = "word", height=220, width=200, font=ctk.CTkFont("italic", size=15))
+        self.textbox = ctk.CTkTextbox(self.input_frame, wrap = "word", height=110, width=100, font=ctk.CTkFont("italic", size=10))
         self.textbox.insert(1.0, self.hover_text.get_widget("general"))
         self.textbox.grid(row=8, column=0, padx=(20, 20), pady=(20, 10), sticky="nsew")
 
         # Quadrant frame
         self.quadrant_label = ctk.CTkLabel(self.input_frame, text = "Emotion Quadrants",font=ctk.CTkFont(size=20, weight="bold"))
         self.quadrant_label.grid(row=7, column=1, padx=(20, 20), pady=(120, 10), sticky="w")
-        self.quadrant_frame = ctk.CTkFrame(self.input_frame, height=500, width=340, fg_color="white")
+        self.quadrant_frame = ctk.CTkFrame(self.input_frame, height=250, width=170, fg_color="white")
         self.quadrant_frame.grid(row=8, column=1, padx=(5, 20), pady=(10, 10), sticky="w")
         self.quadrant_frame.bind("<Enter>", lambda event: self.hover_show(event, "quadrant_frame"))
         self.image = ctk.CTkImage(light_image = Image.open("hover_interface/emotion_quadrant.drawio.png"),\
                                   dark_image = Image.open("hover_interface/emotion_quadrant.drawio.png"),
-                                  size=(500,340)) 
+                                  size=(250,170)) 
         self.label_image = ctk.CTkLabel(self.quadrant_frame, image=self.image, text="")
         self.label_image.grid(row=0, column=0, padx=(5, 5), pady=(5, 5))
         self.after(2000, self.update_text)
@@ -373,10 +375,12 @@ class Recommersion(ctk.CTk):
         cut = self.check_cut(self.cut_text.get())
         if cut is None:
             return
-        playlist = self.functions.generate_playlist(dimensional = dimensional, \
-                                                    distance=self.distance.get(), cut = cut).reset_index()
+        self.after(0, lambda : self.text_var.set("Loading playlist: please wait a moment..."))
         messagebox.showinfo("Adjusting Recommendation", \
                             f"Adjusting playlist with valence {dimensional[0]} and arousal {dimensional[1]}")
+        playlist = self.functions.generate_playlist(dimensional = dimensional, \
+                                                    distance=self.distance.get(), cut = cut).reset_index()
+        self.text_var.set("Playlist generated. Enjoy!")
         print(playlist)
         self.after(0, lambda: self.update_playlist(playlist))
 
@@ -421,7 +425,15 @@ class Recommersion(ctk.CTk):
         self.paused = False
         self.playlist_initialized = True  
         self.play_song()
-
+    
+    def append_playlist(self, track):
+        self.playlist_box.insert("", "end", values=(track['artist'], track['title']))
+        first_item = int(self.playlist_box.get_children()[0])        
+        self.playlist_box.selection_set(first_item)
+        self.current_song = self.current_playlist.iloc[first_item]
+        self.paused = False
+        self.playlist_initialized = True  
+        self.play_song()
     
     def adjust_recommendation(self):
         if self.data_loaded:

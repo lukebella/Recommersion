@@ -269,6 +269,7 @@ transformers==4.47.0
 typing_extensions==4.12.2
 tzdata==2024.2
 urllib3==2.3.0
+validators==0.34.0
 wcwidth==0.2.13
 webcolors==1.12
 webencodings==0.5.1
