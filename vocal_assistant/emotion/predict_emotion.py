@@ -25,7 +25,7 @@ from pathlib import Path
 
 # Class for implementing audio augmentations
 class AudioAugmentation:
-    def __init__(self, sample_rate=16000, noise_level=0.005, time_mask_param=30, freq_mask_param=15):
+    def __init__(self, sample_rate=16000, noise_level=0.01, time_mask_param=30, freq_mask_param=15):
         self.sample_rate = sample_rate
         self.noise_level = noise_level
         self.time_mask_param = time_mask_param
@@ -35,20 +35,24 @@ class AudioAugmentation:
         noise = torch.randn_like(torch.from_numpy(waveform)) * self.noise_level
         return torch.add(torch.from_numpy(waveform), noise)
     
-    # sovrapposizione tra due file di input
 
     def pitch_shift(self, waveform):
         return librosa.effects.pitch_shift(y=waveform, sr=self.sample_rate, n_steps=random.randint(-6, 6))
+    
+    # sovrapposizione tra due file di input
+    def superimpose(self, waveform, random_waveform):
+        return torch.add(torch.from_numpy(waveform), torch.from_numpy(random_waveform*0.5))
 
     
-    def augment(self, waveform):
+    def augment(self, waveform, random_waveform):
         augmentations = [
-            self.add_background_noise,
-            lambda x: self.pitch_shift(x),
+            lambda x,_: self.add_background_noise(x),
+            lambda x,_: self.pitch_shift(x),
+            lambda x,y: self.superimpose(x,y)
         ]
         random.shuffle(augmentations)
-        for augment in augmentations[:1]:  # Apply 2 random augmentations
-            waveform = augment(waveform)
+        for augment in augmentations[:1]:  
+            waveform = augment(waveform, random_waveform)
         return waveform
 
 
@@ -66,25 +70,6 @@ class EmotionDataset(Dataset):
 
     def __len__(self):
         return len(self.df)
-
-
-    """def only_vocals(self, waveform):
-        S_full, phase = librosa.magphase(librosa.stft(waveform))
-        S_filter = librosa.decompose.nn_filter(S_full,
-                                        aggregate=np.median,
-                                        metric='cosine',)
-                                        #width=int(librosa.time_to_frames(2, sr=self.sample_rate)))
-
-        S_filter = np.minimum(S_full, S_filter)
-        margin_v = 2
-        power = 2
-
-        mask_v = librosa.util.softmask(S_full - S_filter,
-                                    margin_v * S_filter,
-                                    power=power)
-        
-        S_foreground = mask_v * S_full
-        return librosa.istft(S_foreground * phase)"""
 
 
     # Normalize waveform between 0 and 1
@@ -121,24 +106,30 @@ class EmotionDataset(Dataset):
         return torch.tensor(mel_spectrogram_stack, dtype=torch.float32)
 
 
+    def retrieve_random_waveform(self, wav_data):
+        random_wav = self.df.iloc[random.randint(0, len(self.df))]["wav_file"]
+
+        return (torch.randn_like(torch.from_numpy(wav_data)) * 0.01).numpy() if len(random_wav) < len(wav_data) \
+            else random_wav[:len(wav_data)]
+
+
     # Padding of max_seconds and creation of the batch
     def __getitem__(self, idx):
         wav_data = self.df.iloc[idx]["wav_file"]  
         valence = self.df.iloc[idx]["Valence"]
         arousal = self.df.iloc[idx]["Arousal"]
-        
+
         max_length = self.sample_rate * self.max_seconds
 
         if len(wav_data) > max_length/ self.threshold:
             return self.__getitem__((idx + 1) % len(self.df))
         
-        #wav_data = self.normalize_waveform(wav_data)
-        #wav_data = self.only_vocals(wav_data)
         rand_augmenter = int(random.random()*1000)
+        random_wav = self.retrieve_random_waveform(wav_data)
 
         # Apply file augmentation randomly and occasionaly 
         if self.augmenter and (rand_augmenter%4==0):
-            wav_data = self.augmenter.augment(wav_data)
+            wav_data = self.augmenter.augment(wav_data, random_wav)
 
         inputs = self.processor(wav_data, sampling_rate=self.sample_rate, return_tensors="pt", padding = 'max_length', \
                                 truncation = True, max_length = max_length, do_normalize = True,\
@@ -254,7 +245,7 @@ def return_device():
 def ccc_loss(gold, pred):
     ccc = ConcordanceCorrCoef().to("cuda")
     coeff = ccc(gold, pred)
-    print("CCC:", coeff)
+    # print("CCC:", coeff)
     ccc_loss = 1 - coeff
     return ccc_loss
 
@@ -278,16 +269,17 @@ def compute_loss(model, device, batch, alpha, beta):
     
     _,logits = model(input_values, mel_spectrogram)
 
-    print("Predictions:", logits[:8].detach().cpu().numpy())
-    print("True labels:", labels[:8].detach().cpu().numpy())
+    # print("Predictions:", logits[:8].detach().cpu().numpy())
+    # print("True labels:", labels[:8].detach().cpu().numpy())
 
     loss_val = ccc_loss(labels[:, 0], logits[:, 0])
     loss_ar = ccc_loss(labels[:, 1], logits[:, 1])
 
     # Weighted total loss
     loss = alpha * loss_val + beta * loss_ar
-    print(f"Loss (valence): {loss_val.item()}, Loss (arousal): {loss_ar.item()}, Total: {loss.item()}")
+    # print(f"Loss (valence): {loss_val.item()}, Loss (arousal): {loss_ar.item()}, Total: {loss.item()}")
     return loss, loss_val, loss_ar
+
 
 
 def get_gradients(model):
@@ -379,51 +371,6 @@ def train(model, device, train_dataloader, test_dataloader, \
 
     #writer.close()
     plot_losses(train_losses, val_losses)
-
-# CV
-def cross_validate_alpha_beta(device, dataset, alpha_beta_values, config, k=5, epochs=12):
-   
-    kfold = KFold(n_splits=k, shuffle=True, random_state=42)
-    results = {}
-
-    for alpha, beta in alpha_beta_values:
-        print(f"Testing alpha={alpha}, beta={beta}")
-        fold_losses = []
-
-        for train_idx, val_idx in kfold.split(dataset):
-            train_subset = torch.utils.data.Subset(dataset, train_idx)
-            val_subset = torch.utils.data.Subset(dataset, val_idx)
-
-            train_loader = DataLoader(train_subset, batch_size=32, shuffle=True)
-            val_loader = DataLoader(val_subset, batch_size=32, shuffle=False)
-
-            # Reinitialize model and optimizer for each fold
-            model = EmotionModel(config).to(device)
-            optimizer = AdamW(model.parameters(), lr=1e-6, weight_decay=1e-2)
-
-            for epoch in range(epochs):
-                # Training loop
-                model.train()
-                for batch in train_loader:
-                    optimizer.zero_grad()
-                    loss = compute_loss(model, device, batch, alpha, beta)
-                    if loss is None: continue
-                    loss.backward()
-                    optimizer.step()
-
-                # Validation loop
-                val_loss = validate(model, device, val_loader, alpha, beta)
-                fold_losses.append(val_loss)
-
-        # Store the mean validation loss for the parameter combination
-        mean_loss = sum(fold_losses) / len(fold_losses)
-        results[(alpha, beta)] = mean_loss
-        print(f"Mean Validation Loss for alpha={alpha}, beta={beta}: {mean_loss}")
-
-    # Find the best alpha and beta
-    best_params = min(results, key=results.get)
-    print(f"Best alpha, beta combination: {best_params} with Loss: {results[best_params]}")
-    return best_params
 
 
 # Validation Loop
@@ -538,9 +485,6 @@ def main():
     test_dataloader = DataLoader(test_dataset, batch_size=16, shuffle=True,\
                                 num_workers=4, pin_memory=True, drop_last = True,)
 
-    
-    #alpha_beta_values = [(a, 1 - a) for a in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]]
-    #best_alpha, best_beta = cross_validate_alpha_beta(device, train_dataset, alpha_beta_values, config)
 
     model = EmotionModel(config).to(device)
     summary(model)
