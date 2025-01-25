@@ -1,10 +1,34 @@
 {
   "stats": {
-    "submitted": 0,
-    "finished": 0,
+    "submitted": 1,
+    "finished": 1,
     "running": 0
   },
-  "data": [],
-  "configs": {},
-  "config_origins": {}
+  "data": [
+    {
+      "config_id": 1,
+      "instance": null,
+      "seed": 209652396,
+      "budget": null,
+      "cost": Infinity,
+      "time": 0.0,
+      "cpu_time": 12.772075956,
+      "status": 2,
+      "starttime": 1737804495.1702924,
+      "endtime": 1737804610.421501,
+      "additional_info": {
+        "traceback": "Traceback (most recent call last):\n  File \"/home/lucab/Recommersion/myenv/lib/python3.10/site-packages/smac/runner/target_function_runner.py\", line 190, in run\n    rval = self(config_copy, target_function, kwargs)\n  File \"/home/lucab/Recommersion/myenv/lib/python3.10/site-packages/smac/runner/target_function_runner.py\", line 264, in __call__\n    return algorithm(config, **algorithm_kwargs)\n  File \"/tmp/ipykernel_3176781/4201704002.py\", line 41, in train\n    loss.backward()\n  File \"/home/lucab/Recommersion/myenv/lib/python3.10/site-packages/torch/_tensor.py\", line 581, in backward\n    torch.autograd.backward(\n  File \"/home/lucab/Recommersion/myenv/lib/python3.10/site-packages/torch/autograd/__init__.py\", line 347, in backward\n    _engine_run_backward(\n  File \"/home/lucab/Recommersion/myenv/lib/python3.10/site-packages/torch/autograd/graph.py\", line 825, in _engine_run_backward\n    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass\n  File \"/home/lucab/Recommersion/myenv/lib/python3.10/site-packages/torch/autograd/function.py\", line 307, in apply\n    return user_fn(self, *args)\n  File \"/home/lucab/Recommersion/myenv/lib/python3.10/site-packages/torch/utils/checkpoint.py\", line 321, in backward\n    torch.autograd.backward(outputs_with_grad, args_with_grad)\n  File \"/home/lucab/Recommersion/myenv/lib/python3.10/site-packages/torch/autograd/__init__.py\", line 347, in backward\n    _engine_run_backward(\n  File \"/home/lucab/Recommersion/myenv/lib/python3.10/site-packages/torch/autograd/graph.py\", line 825, in _engine_run_backward\n    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass\ntorch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1000.00 MiB. GPU 0 has a total capacity of 11.77 GiB of which 83.31 MiB is free. Including non-PyTorch memory, this process has 11.68 GiB memory in use. Of the allocated memory 8.38 GiB is allocated by PyTorch, and 2.92 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)\n",
+        "error": "OutOfMemoryError('CUDA out of memory. Tried to allocate 1000.00 MiB. GPU 0 has a total capacity of 11.77 GiB of which 83.31 MiB is free. Including non-PyTorch memory, this process has 11.68 GiB memory in use. Of the allocated memory 8.38 GiB is allocated by PyTorch, and 2.92 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)')"
+      }
+    }
+  ],
+  "configs": {
+    "1": {
+      "alpha": 0.2668785210699,
+      "beta": 0.6205646954477
+    }
+  },
+  "config_origins": {
+    "1": "Initial Design: Sobol"
+  }
 }
