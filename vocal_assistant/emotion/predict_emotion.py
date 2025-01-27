@@ -107,7 +107,7 @@ class EmotionDataset(Dataset):
 
 
     def retrieve_random_waveform(self, wav_data):
-        random_wav = self.df.iloc[random.randint(0, len(self.df))]["wav_file"]
+        random_wav = self.df.iloc[random.randint(0, len(self.df)-1)]["wav_file"]
 
         return (torch.randn_like(torch.from_numpy(wav_data)) * 0.01).numpy() if len(random_wav) < len(wav_data) \
             else random_wav[:len(wav_data)]
