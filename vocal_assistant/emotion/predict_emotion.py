@@ -182,6 +182,7 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
 
         # Final Regressor
         self.regressor = nn.Linear(config.hidden_size*2, config.num_labels)
+        print("BIAS:",self.regressor.bias)
         #self.act = nn.Tanh()
         self.init_weights()
 
@@ -250,6 +251,22 @@ def ccc_loss(gold, pred):
     return ccc_loss
 
 
+def L1(gold, pred):
+    #return torch.mean(torch.abs(gold-pred))
+    loss = nn.L1Loss()
+    return loss(pred, gold)
+
+def L2(gold, pred):
+    #return torch.mean((gold-pred)**2)
+    loss = nn.MSELoss()
+    return loss(pred, gold)
+
+def R2(gold, pred):
+    num = torch.sum((gold-pred)**2)
+    den = torch.sum((gold - torch.mean(gold))**2)
+    return 1 - (num / den)
+
+
 def batch_values(batch, device):
     input_values = batch['input_values'].to(device)
     mel_spectrogram = batch['mel_spectrogram'].to(device)
@@ -275,10 +292,27 @@ def compute_loss(model, device, batch, alpha, beta):
     loss_val = ccc_loss(labels[:, 0], logits[:, 0])
     loss_ar = ccc_loss(labels[:, 1], logits[:, 1])
 
+    l1_val = L1(labels[:, 0], logits[:, 0])
+    l2_val = L2(labels[:, 0], logits[:, 0])
+    r2_val = R2(labels[:, 0], logits[:, 0])
+
+    dummy_val = torch.full_like(labels[:, 0], labels[:, 0].mean())
+    r2_val_dummy = R2(labels[: , 0], dummy_val)
+    
+    l1_ar = L1(labels[:, 1], logits[:, 1])
+    l2_ar = L2(labels[:, 1], logits[:, 1])
+    r2_ar = R2(labels[:, 1], logits[:, 1])
+    dummy_ar = torch.full_like(labels[:, 1], labels[:, 1].mean())
+    r2_ar_dummy = R2(labels[: , 1], dummy_ar)
+
+    l1 = alpha * l1_val + beta * l1_ar
+    l2 = alpha * l2_val + beta * l2_ar
+    r2 = alpha * r2_val + beta * r2_ar
+    r2_dummy = alpha * r2_val_dummy + beta*r2_ar_dummy
     # Weighted total loss
     loss = alpha * loss_val + beta * loss_ar
-    # print(f"Loss (valence): {loss_val.item()}, Loss (arousal): {loss_ar.item()}, Total: {loss.item()}")
-    return loss, loss_val, loss_ar
+    print(f"Loss (valence): {loss_val.item()}, Loss (arousal): {loss_ar.item()}, Total: {loss.item()}")
+    return loss, loss_val, loss_ar, l1, l2, r2, r2_dummy
 
 
 
@@ -309,6 +343,12 @@ def train(model, device, train_dataloader, test_dataloader, \
     print("****TRAINING****")
     train_losses = []
     val_losses = []
+    valence_losses = []
+    arousal_losses = []
+    l1_losses = []
+    l2_losses = []
+    r2_losses = []
+    r2_losses_dummy = []
     best_val_loss = float("inf")
     no_improvement_epochs = 0
     optimizer = AdamW(model.parameters(), lr=1e-5, weight_decay=1e-3)
@@ -323,7 +363,7 @@ def train(model, device, train_dataloader, test_dataloader, \
 
             optimizer.zero_grad()
            
-            loss, _, _ = compute_loss(model, device, batch, alpha, beta)
+            loss, _, _, _, _, _, _ = compute_loss(model, device, batch, alpha, beta)
             if loss is None: continue 
 
             # Backpropagation
@@ -348,9 +388,16 @@ def train(model, device, train_dataloader, test_dataloader, \
         log_embedding_norms(model, epoch)
 
         # Validation Loop
-        val_loss = validate(model, device, test_dataloader, alpha, beta)
+        val_loss, loss_val, loss_ar, l1, l2, r2, r2_dummy = validate(model, device, test_dataloader, alpha, beta)
         #writer.add_scalar("Loss/Validation", val_loss, epoch)
         val_losses.append(val_loss)
+        valence_losses.append(loss_val)
+        arousal_losses.append(loss_ar)
+        l1_losses.append(l1)
+        l2_losses.append(l2)
+        r2_losses.append(r2)
+        r2_losses_dummy.append(r2_dummy)
+
         # Check if validation loss improved
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -367,35 +414,49 @@ def train(model, device, train_dataloader, test_dataloader, \
             break
         
         plot_losses(train_losses, val_losses)
+        plot_metrics(valence_losses, arousal_losses, l1_losses, l2_losses, r2_losses, r2_losses_dummy)
         scheduler.step(val_loss)
 
     #writer.close()
-    plot_losses(train_losses, val_losses)
 
 
 # Validation Loop
 def validate(model, device, test_dataloader, alpha, beta):
     model.eval()
-    avg_val_loss = 0
+    
     val_loss = 0
+    val_loss_val = 0
+    val_loss_ar = 0
+    val_loss_l1 = 0
+    val_loss_l2 = 0
+    val_loss_r2 = 0
+    val_loss_r2_dummy = 0
     print("****VALIDATION****")
     with torch.no_grad():
         for batch in tqdm(test_dataloader):
-            loss, _, _ = compute_loss(model, device, batch, alpha, beta)
+            loss, loss_val, loss_ar, l1, l2, r2, r2_dummy = compute_loss(model, device, batch, alpha, beta)
             if loss is None: continue
 
             val_loss += loss.item()
-            #val_loss_val += loss_val.item()
-            #val_loss_ar += loss_ar.item()
+            val_loss_val += loss_val.item()
+            val_loss_ar += loss_ar.item()
+            val_loss_l1 += l1.item()
+            val_loss_l2 += l2.item()
+            val_loss_r2 += r2.item()
+            val_loss_r2_dummy +=r2_dummy.item()
 
     # Average CCC scores
     avg_val_loss = val_loss / len(test_dataloader)
-    #avg_val_loss_val = val_loss_val / len(test_dataloader)
-    #avg_val_loss_ar = val_loss_ar / len(test_dataloader)
+    avg_val_loss_val = val_loss_val / len(test_dataloader)
+    avg_val_loss_ar = val_loss_ar / len(test_dataloader)
+    avg_val_loss_l1 = val_loss_l1 / len(test_dataloader)
+    avg_val_loss_l2 = val_loss_l2 / len(test_dataloader)
+    avg_val_loss_r2 = val_loss_r2 / len(test_dataloader)
+    avg_val_loss_r2_dummy = val_loss_r2_dummy / len(test_dataloader)
 
     #TODO print best valence and arousal losses
     print(f"Validation Loss: {avg_val_loss}")
-    return avg_val_loss
+    return avg_val_loss, avg_val_loss_val, avg_val_loss_ar, avg_val_loss_l1, avg_val_loss_l2, avg_val_loss_r2, avg_val_loss_r2_dummy
 
 
 def plot_losses(train_losses, val_losses, filename = "plots/loss_plot_trial.png"):
@@ -411,7 +472,22 @@ def plot_losses(train_losses, val_losses, filename = "plots/loss_plot_trial.png"
     print(f"Plot saved as {filename}")
     #plt.show()
     # Save the plot to a file
-    
+
+def plot_metrics(valence_losses, arousal_losses, l1_losses, l2_losses, r2_losses, r2_dummy, filename = "plots/metrics_plot_trial.png"):
+    plt.figure(figsize=(10, 6))
+    plt.plot(range(1, len(valence_losses) + 1), valence_losses, label='Valence CCC Loss', marker='o')
+    plt.plot(range(1, len(arousal_losses) + 1), arousal_losses, label='Arousal CCC Loss', marker='o')
+    plt.plot(range(1, len(l1_losses) + 1), l1_losses, label='L1 Loss', marker='o')
+    plt.plot(range(1, len(l2_losses) + 1), l2_losses, label='L2 Loss', marker='o')
+    plt.plot(range(1, len(r2_losses) + 1), r2_losses, label='R2 Loss', marker='o')
+    plt.plot(range(1, len(r2_dummy) + 1), r2_dummy, label='R2 Dummy Loss', marker='o')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Metrics Over Epochs')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(filename)
+    print(f"Plot saved as {filename}")
 
 # Load Checkpoint
 def load_trained_model(device, checkpoint_path, pretrained_model):
@@ -457,8 +533,8 @@ def main():
 
     muse = pd.read_pickle("data/MuSe_sample").sample(frac=1, random_state=42)
     iemocap = pd.read_pickle("data/IEMOCAP_useful").sample(frac=1, random_state=42)
-
-    df = pd.concat([iemocap, muse]).sample(frac=1, random_state=42)
+    msp = pd.read_pickle("data/MSP_PODCAST").sample(frac=0.2, random_state=42)
+    df = pd.concat([iemocap, muse, msp]).sample(frac=1, random_state=42)
     
     print(df["Valence"].describe())
     print(df["Arousal"].describe())
@@ -485,7 +561,7 @@ def main():
     test_dataloader = DataLoader(test_dataset, batch_size=16, shuffle=True,\
                                 num_workers=4, pin_memory=True, drop_last = True,)
 
-
+    del df, train_df, test_df, train_dataset, test_dataset
     model = EmotionModel(config).to(device)
     summary(model)
     train(model, device, train_dataloader, test_dataloader, epochs = 50)#, alpha = best_alpha, beta = best_beta)
