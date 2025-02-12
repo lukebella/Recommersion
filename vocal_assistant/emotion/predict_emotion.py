@@ -14,13 +14,9 @@ from torchmetrics.regression import ConcordanceCorrCoef
 import numpy as np
 import random
 import librosa
-from sklearn.model_selection import KFold
 from pathlib import Path
+import gc
 
-#CV
-# half in grid search scikit learn
-# bayesan opt: smac3
-#Calcola loss L1/L2/R^2 in test set 
 
 
 # Class for implementing audio augmentations
@@ -63,7 +59,7 @@ class EmotionDataset(Dataset):
         self.processor = processor
         self.augmenter = augmenter
         self.sample_rate = 16000
-        self.max_seconds = 10  #max padding seconds
+        self.max_seconds = 6  #max padding seconds
         self.threshold = 0.8  #max percentage of which files to keep
         self.attention_mask = attention_mask
 
@@ -89,9 +85,13 @@ class EmotionDataset(Dataset):
     # Method for retrieving mel coefficients
     @staticmethod
     def get_mel_spectrogram(input_values):
-        #hop_length = int(0.012 * self.sample_rate)  
-        #win_length = int(0.026 * self.sample_rate)  
-        mel_spectrogram = librosa.feature.melspectrogram(y=input_values.numpy(), sr=16000, n_mels=40, fmax=8000)
+        n_mels = 48
+        hop_length = int(0.010 * 16000)  
+        win_length = int(0.025 * 16000)
+        n_fft = 512  
+        mel_spectrogram = librosa.feature.melspectrogram(y=input_values.numpy(), sr=16000, n_mels=n_mels, \
+                                                         hop_length=hop_length, win_length=win_length, fmax=8000,\
+                                                         n_fft=n_fft)
         
         mel_spectrogram = librosa.power_to_db(mel_spectrogram, ref=np.max)
         mel_spectrogram_derivative_1 = librosa.feature.delta(mel_spectrogram, order=1)
@@ -145,7 +145,6 @@ class EmotionDataset(Dataset):
 
     
 class EmotionModel(Wav2Vec2PreTrainedModel):
-    r"""Speech emotion classifier."""
 
     def __init__(self, config):
 
@@ -167,23 +166,33 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         # Mel CNN
         self.mel_cnn = nn.Sequential(
             nn.Conv2d(3, 4, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
+            nn.BatchNorm2d(4),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=(2, 2)),
+
             nn.Conv2d(4, 8, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
+            nn.BatchNorm2d(8),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=(2, 2)),
+
+            nn.Conv2d(8, 16, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=(2, 2)),
+
             nn.Flatten()
         )
 
+    
         # BLSTM
-        self.rnn = nn.LSTM(input_size= 7008, hidden_size=config.hidden_size, num_layers=2, \
-                           batch_first=True, bidirectional=True, dropout=0.3)
+        #config.hidden_size = 768
+        self.rnn = nn.LSTM(input_size= 7968, hidden_size=1024, num_layers=2, \
+                           batch_first=True, bidirectional=True, dropout=0.5)
+        self.act = nn.Tanh()
         self.dropout = nn.Dropout(0.5)
-
         # Final Regressor
-        self.regressor = nn.Linear(config.hidden_size*2, config.num_labels)
-        print("BIAS:",self.regressor.bias)
-        #self.act = nn.Tanh()
+        self.regressor = nn.Linear(self.rnn.hidden_size*2, config.num_labels)
+        
         self.init_weights()
 
 
@@ -197,16 +206,17 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         hidden_states = torch.mean(hidden_states, dim=1)
         mel_features = self.mel_cnn(mel_spectrogram)
     
-
         # Combine features
         combined_features = torch.cat((hidden_states, mel_features), dim=1)
         #combined_features = self.dropout(combined_features)
         temp,_ = self.rnn(combined_features)
         temp = self.dropout(temp)
-        #temp = self.act(temp)
+        temp = self.act(temp)
+        #
         logits = self.regressor(temp)
         
         return hidden_states, logits
+    
 
 
 #writer = SummaryWriter("runs/emotion_model")
@@ -277,7 +287,7 @@ def batch_values(batch, device):
 
 
 def compute_loss(model, device, batch, alpha, beta):
-    input_values, labels,  mel_spectrogram = batch_values(batch, device)  #
+    input_values, labels,  mel_spectrogram = batch_values(batch, device)  
 
     # For small batch sizes where variance could be very low
     if labels[:, 0].std() < 1e-7 or labels[:, 1].std() < 1e-7:
@@ -295,24 +305,18 @@ def compute_loss(model, device, batch, alpha, beta):
     l1_val = L1(labels[:, 0], logits[:, 0])
     l2_val = L2(labels[:, 0], logits[:, 0])
     r2_val = R2(labels[:, 0], logits[:, 0])
-
-    dummy_val = torch.full_like(labels[:, 0], labels[:, 0].mean())
-    r2_val_dummy = R2(labels[: , 0], dummy_val)
     
     l1_ar = L1(labels[:, 1], logits[:, 1])
     l2_ar = L2(labels[:, 1], logits[:, 1])
     r2_ar = R2(labels[:, 1], logits[:, 1])
-    dummy_ar = torch.full_like(labels[:, 1], labels[:, 1].mean())
-    r2_ar_dummy = R2(labels[: , 1], dummy_ar)
 
     l1 = alpha * l1_val + beta * l1_ar
     l2 = alpha * l2_val + beta * l2_ar
     r2 = alpha * r2_val + beta * r2_ar
-    r2_dummy = alpha * r2_val_dummy + beta*r2_ar_dummy
     # Weighted total loss
     loss = alpha * loss_val + beta * loss_ar
     print(f"Loss (valence): {loss_val.item()}, Loss (arousal): {loss_ar.item()}, Total: {loss.item()}")
-    return loss, loss_val, loss_ar, l1, l2, r2, r2_dummy
+    return loss, loss_val, loss_ar, l1, l2, r2
 
 
 
@@ -337,9 +341,7 @@ def plot_gradients(gradients, layer_name):
 # Training function
 def train(model, device, train_dataloader, test_dataloader, \
           epochs=3, alpha=0.5, beta=0.5, checkpoint_path = "custom_model.pth", patience_es = 15):
-    """
-    Train the model using CCC loss for valence and arousal.
-    """
+    
     print("****TRAINING****")
     train_losses = []
     val_losses = []
@@ -348,7 +350,6 @@ def train(model, device, train_dataloader, test_dataloader, \
     l1_losses = []
     l2_losses = []
     r2_losses = []
-    r2_losses_dummy = []
     best_val_loss = float("inf")
     no_improvement_epochs = 0
     optimizer = AdamW(model.parameters(), lr=1e-5, weight_decay=1e-3)
@@ -363,7 +364,7 @@ def train(model, device, train_dataloader, test_dataloader, \
 
             optimizer.zero_grad()
            
-            loss, _, _, _, _, _, _ = compute_loss(model, device, batch, alpha, beta)
+            loss, _, _, _, _, _ = compute_loss(model, device, batch, alpha, beta)
             if loss is None: continue 
 
             # Backpropagation
@@ -388,7 +389,7 @@ def train(model, device, train_dataloader, test_dataloader, \
         log_embedding_norms(model, epoch)
 
         # Validation Loop
-        val_loss, loss_val, loss_ar, l1, l2, r2, r2_dummy = validate(model, device, test_dataloader, alpha, beta)
+        val_loss, loss_val, loss_ar, l1, l2, r2 = validate(model, device, test_dataloader, alpha, beta)
         #writer.add_scalar("Loss/Validation", val_loss, epoch)
         val_losses.append(val_loss)
         valence_losses.append(loss_val)
@@ -396,7 +397,6 @@ def train(model, device, train_dataloader, test_dataloader, \
         l1_losses.append(l1)
         l2_losses.append(l2)
         r2_losses.append(r2)
-        r2_losses_dummy.append(r2_dummy)
 
         # Check if validation loss improved
         if val_loss < best_val_loss:
@@ -414,7 +414,7 @@ def train(model, device, train_dataloader, test_dataloader, \
             break
         
         plot_losses(train_losses, val_losses)
-        plot_metrics(valence_losses, arousal_losses, l1_losses, l2_losses, r2_losses, r2_losses_dummy)
+        plot_metrics(valence_losses, arousal_losses, l1_losses, l2_losses, r2_losses)
         scheduler.step(val_loss)
 
     #writer.close()
@@ -430,11 +430,10 @@ def validate(model, device, test_dataloader, alpha, beta):
     val_loss_l1 = 0
     val_loss_l2 = 0
     val_loss_r2 = 0
-    val_loss_r2_dummy = 0
     print("****VALIDATION****")
     with torch.no_grad():
         for batch in tqdm(test_dataloader):
-            loss, loss_val, loss_ar, l1, l2, r2, r2_dummy = compute_loss(model, device, batch, alpha, beta)
+            loss, loss_val, loss_ar, l1, l2, r2 = compute_loss(model, device, batch, alpha, beta)
             if loss is None: continue
 
             val_loss += loss.item()
@@ -443,7 +442,6 @@ def validate(model, device, test_dataloader, alpha, beta):
             val_loss_l1 += l1.item()
             val_loss_l2 += l2.item()
             val_loss_r2 += r2.item()
-            val_loss_r2_dummy +=r2_dummy.item()
 
     # Average CCC scores
     avg_val_loss = val_loss / len(test_dataloader)
@@ -452,11 +450,10 @@ def validate(model, device, test_dataloader, alpha, beta):
     avg_val_loss_l1 = val_loss_l1 / len(test_dataloader)
     avg_val_loss_l2 = val_loss_l2 / len(test_dataloader)
     avg_val_loss_r2 = val_loss_r2 / len(test_dataloader)
-    avg_val_loss_r2_dummy = val_loss_r2_dummy / len(test_dataloader)
 
     #TODO print best valence and arousal losses
     print(f"Validation Loss: {avg_val_loss}")
-    return avg_val_loss, avg_val_loss_val, avg_val_loss_ar, avg_val_loss_l1, avg_val_loss_l2, avg_val_loss_r2, avg_val_loss_r2_dummy
+    return avg_val_loss, avg_val_loss_val, avg_val_loss_ar, avg_val_loss_l1, avg_val_loss_l2, avg_val_loss_r2
 
 
 def plot_losses(train_losses, val_losses, filename = "plots/loss_plot_trial.png"):
@@ -473,14 +470,13 @@ def plot_losses(train_losses, val_losses, filename = "plots/loss_plot_trial.png"
     #plt.show()
     # Save the plot to a file
 
-def plot_metrics(valence_losses, arousal_losses, l1_losses, l2_losses, r2_losses, r2_dummy, filename = "plots/metrics_plot_trial.png"):
+def plot_metrics(valence_losses, arousal_losses, l1_losses, l2_losses, r2_losses, filename = "plots/metrics_plot_trial.png"):
     plt.figure(figsize=(10, 6))
     plt.plot(range(1, len(valence_losses) + 1), valence_losses, label='Valence CCC Loss', marker='o')
     plt.plot(range(1, len(arousal_losses) + 1), arousal_losses, label='Arousal CCC Loss', marker='o')
     plt.plot(range(1, len(l1_losses) + 1), l1_losses, label='L1 Loss', marker='o')
     plt.plot(range(1, len(l2_losses) + 1), l2_losses, label='L2 Loss', marker='o')
     plt.plot(range(1, len(r2_losses) + 1), r2_losses, label='R2 Loss', marker='o')
-    plt.plot(range(1, len(r2_dummy) + 1), r2_dummy, label='R2 Dummy Loss', marker='o')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.title('Metrics Over Epochs')
@@ -533,11 +529,11 @@ def main():
 
     muse = pd.read_pickle("data/MuSe_sample").sample(frac=1, random_state=42)
     iemocap = pd.read_pickle("data/IEMOCAP_useful").sample(frac=1, random_state=42)
-    msp = pd.read_pickle("data/MSP_PODCAST").sample(frac=0.2, random_state=42)
+    msp = pd.read_pickle("data/MSP_PODCAST_SAMPLED").sample(frac=1, random_state=42)
     df = pd.concat([iemocap, muse, msp]).sample(frac=1, random_state=42)
     
-    print(df["Valence"].describe())
-    print(df["Arousal"].describe())
+    # print(df["Valence"].describe())
+    # print(df["Arousal"].describe())
 
     
     df.drop(columns = ["Name"], inplace = True)
@@ -556,12 +552,14 @@ def main():
     train_dataset = EmotionDataset(train_df, processor, augmenter, att_mask)
     test_dataset = EmotionDataset(test_df, processor, augmenter, att_mask)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True,\
+    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True,\
                                 num_workers=4, pin_memory=True, drop_last = True, )
-    test_dataloader = DataLoader(test_dataset, batch_size=16, shuffle=True,\
+    test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=True,\
                                 num_workers=4, pin_memory=True, drop_last = True,)
 
-    del df, train_df, test_df, train_dataset, test_dataset
+    del df, train_df, test_df, train_dataset, test_dataset, muse, iemocap, msp
+    gc.collect()
+    
     model = EmotionModel(config).to(device)
     summary(model)
     train(model, device, train_dataloader, test_dataloader, epochs = 50)#, alpha = best_alpha, beta = best_beta)
