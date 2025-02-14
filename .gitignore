@@ -16,3 +16,4 @@ parallelism.py
 myenv/
 runs/
 vocal_assistant/emotion/smac3_output/
+survey/

@@ -9,6 +9,8 @@ from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from torchinfo import summary
 import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')
 from torchmetrics.regression import ConcordanceCorrCoef
 #from torch.utils.tensorboard import SummaryWriter
 import numpy as np
@@ -218,7 +220,6 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         return hidden_states, logits
     
 
-
 #writer = SummaryWriter("runs/emotion_model")
 
 def log_embedding_norms(model, epoch):
@@ -302,21 +303,21 @@ def compute_loss(model, device, batch, alpha, beta):
     loss_val = ccc_loss(labels[:, 0], logits[:, 0])
     loss_ar = ccc_loss(labels[:, 1], logits[:, 1])
 
-    l1_val = L1(labels[:, 0], logits[:, 0])
+    """l1_val = L1(labels[:, 0], logits[:, 0])
     l2_val = L2(labels[:, 0], logits[:, 0])
     r2_val = R2(labels[:, 0], logits[:, 0])
     
     l1_ar = L1(labels[:, 1], logits[:, 1])
     l2_ar = L2(labels[:, 1], logits[:, 1])
-    r2_ar = R2(labels[:, 1], logits[:, 1])
+    r2_ar = R2(labels[:, 1], logits[:, 1])"""
 
-    l1 = alpha * l1_val + beta * l1_ar
+    """l1 = alpha * l1_val + beta * l1_ar
     l2 = alpha * l2_val + beta * l2_ar
-    r2 = alpha * r2_val + beta * r2_ar
+    r2 = alpha * r2_val + beta * r2_ar"""
     # Weighted total loss
     loss = alpha * loss_val + beta * loss_ar
     print(f"Loss (valence): {loss_val.item()}, Loss (arousal): {loss_ar.item()}, Total: {loss.item()}")
-    return loss, loss_val, loss_ar, l1, l2, r2
+    return loss, loss_val, loss_ar, labels, logits
 
 
 
@@ -347,9 +348,12 @@ def train(model, device, train_dataloader, test_dataloader, \
     val_losses = []
     valence_losses = []
     arousal_losses = []
-    l1_losses = []
-    l2_losses = []
-    r2_losses = []
+    l1_losses_val = []
+    l2_losses_val = []
+    r2_losses_val = []
+    l1_losses_ar = []
+    l2_losses_ar = []
+    r2_losses_ar = []
     best_val_loss = float("inf")
     no_improvement_epochs = 0
     optimizer = AdamW(model.parameters(), lr=1e-5, weight_decay=1e-3)
@@ -364,9 +368,8 @@ def train(model, device, train_dataloader, test_dataloader, \
 
             optimizer.zero_grad()
            
-            loss, _, _, _, _, _ = compute_loss(model, device, batch, alpha, beta)
+            loss, _, _, _, _, = compute_loss(model, device, batch, alpha, beta)
             if loss is None: continue 
-
             # Backpropagation
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -389,14 +392,17 @@ def train(model, device, train_dataloader, test_dataloader, \
         log_embedding_norms(model, epoch)
 
         # Validation Loop
-        val_loss, loss_val, loss_ar, l1, l2, r2 = validate(model, device, test_dataloader, alpha, beta)
+        val_loss, loss_val, loss_ar, l1_val, l2_val, r2_val, l1_ar, l2_ar, r2_ar = validate(model, device, test_dataloader, alpha, beta)
         #writer.add_scalar("Loss/Validation", val_loss, epoch)
         val_losses.append(val_loss)
         valence_losses.append(loss_val)
         arousal_losses.append(loss_ar)
-        l1_losses.append(l1)
-        l2_losses.append(l2)
-        r2_losses.append(r2)
+        l1_losses_val.append(l1_val)
+        l2_losses_val.append(l2_val)
+        r2_losses_val.append(r2_val)
+        l1_losses_ar.append(l1_ar)
+        l2_losses_ar.append(l2_ar)
+        r2_losses_ar.append(r2_ar)
 
         # Check if validation loss improved
         if val_loss < best_val_loss:
@@ -414,7 +420,8 @@ def train(model, device, train_dataloader, test_dataloader, \
             break
         
         plot_losses(train_losses, val_losses)
-        plot_metrics(valence_losses, arousal_losses, l1_losses, l2_losses, r2_losses)
+        plot_metrics(valence_losses, arousal_losses, l1_losses_val, l2_losses_val, r2_losses_val, \
+                     l1_losses_ar, l2_losses_ar, r2_losses_ar)
         scheduler.step(val_loss)
 
     #writer.close()
@@ -427,33 +434,44 @@ def validate(model, device, test_dataloader, alpha, beta):
     val_loss = 0
     val_loss_val = 0
     val_loss_ar = 0
-    val_loss_l1 = 0
-    val_loss_l2 = 0
-    val_loss_r2 = 0
+
+    labels = None
+    logits = None
     print("****VALIDATION****")
     with torch.no_grad():
         for batch in tqdm(test_dataloader):
-            loss, loss_val, loss_ar, l1, l2, r2 = compute_loss(model, device, batch, alpha, beta)
+            loss, loss_val, loss_ar, lab, log = compute_loss(model, device, batch, alpha, beta)
+            if lab is not None:
+                if labels is None:
+                    labels = lab.to(return_device())
+                    logits = log.to(return_device())  
+                else:
+                    labels = torch.cat((labels, lab))
+                    logits = torch.cat((logits, log)) 
+
             if loss is None: continue
 
             val_loss += loss.item()
             val_loss_val += loss_val.item()
             val_loss_ar += loss_ar.item()
-            val_loss_l1 += l1.item()
-            val_loss_l2 += l2.item()
-            val_loss_r2 += r2.item()
+
 
     # Average CCC scores
     avg_val_loss = val_loss / len(test_dataloader)
     avg_val_loss_val = val_loss_val / len(test_dataloader)
     avg_val_loss_ar = val_loss_ar / len(test_dataloader)
-    avg_val_loss_l1 = val_loss_l1 / len(test_dataloader)
-    avg_val_loss_l2 = val_loss_l2 / len(test_dataloader)
-    avg_val_loss_r2 = val_loss_r2 / len(test_dataloader)
 
-    #TODO print best valence and arousal losses
+
+    l1_val = L1(labels[:,0], logits[:,0]).item()
+    l2_val = L2(labels[:,0], logits[:,0]).item()
+    r2_val = R2(labels[:,0], logits[:,0]).item()
+
+    l1_ar = L1(labels[:,1], logits[:,1]).item() 
+    l2_ar = L2(labels[:,1], logits[:,1]).item()
+    r2_ar = R2(labels[:,1], logits[:,1]).item()
+    
     print(f"Validation Loss: {avg_val_loss}")
-    return avg_val_loss, avg_val_loss_val, avg_val_loss_ar, avg_val_loss_l1, avg_val_loss_l2, avg_val_loss_r2
+    return avg_val_loss, avg_val_loss_val, avg_val_loss_ar, l1_val, l2_val, r2_val, l1_ar, l2_ar, r2_ar
 
 
 def plot_losses(train_losses, val_losses, filename = "plots/loss_plot_trial.png"):
@@ -467,16 +485,18 @@ def plot_losses(train_losses, val_losses, filename = "plots/loss_plot_trial.png"
     plt.grid(True)
     plt.savefig(filename)
     print(f"Plot saved as {filename}")
-    #plt.show()
-    # Save the plot to a file
+    
 
-def plot_metrics(valence_losses, arousal_losses, l1_losses, l2_losses, r2_losses, filename = "plots/metrics_plot_trial.png"):
+def plot_metrics(valence_losses, arousal_losses, l1_val, l2_val, r2_val, l1_ar, l2_ar, r2_ar, filename = "plots/metrics_plot_trial.png"):
     plt.figure(figsize=(10, 6))
     plt.plot(range(1, len(valence_losses) + 1), valence_losses, label='Valence CCC Loss', marker='o')
     plt.plot(range(1, len(arousal_losses) + 1), arousal_losses, label='Arousal CCC Loss', marker='o')
-    plt.plot(range(1, len(l1_losses) + 1), l1_losses, label='L1 Loss', marker='o')
-    plt.plot(range(1, len(l2_losses) + 1), l2_losses, label='L2 Loss', marker='o')
-    plt.plot(range(1, len(r2_losses) + 1), r2_losses, label='R2 Loss', marker='o')
+    plt.plot(range(1, len(l1_val) + 1), l1_val, label='L1 Val Loss', marker='o')
+    plt.plot(range(1, len(l2_val) + 1), l2_val, label='L2 Val Loss', marker='o')
+    plt.plot(range(1, len(r2_val) + 1), r2_val, label='R2 Val Loss', marker='o')
+    plt.plot(range(1, len(l1_ar) + 1), l1_ar, label='L1 Ar Loss', marker='o')
+    plt.plot(range(1, len(l2_ar) + 1), l2_ar, label='L2 Ar Loss', marker='o')
+    plt.plot(range(1, len(r2_ar) + 1), r2_ar, label='R2 Ar Loss', marker='o')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.title('Metrics Over Epochs')
@@ -532,8 +552,8 @@ def main():
     msp = pd.read_pickle("data/MSP_PODCAST_SAMPLED").sample(frac=1, random_state=42)
     df = pd.concat([iemocap, muse, msp]).sample(frac=1, random_state=42)
     
-    # print(df["Valence"].describe())
-    # print(df["Arousal"].describe())
+    print(df["Valence"].describe())
+    print(df["Arousal"].describe())
 
     
     df.drop(columns = ["Name"], inplace = True)
