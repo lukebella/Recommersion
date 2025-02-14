@@ -246,7 +246,7 @@ scipy==1.11.2
 Send2Trash==1.8.0
 setuptools==75.8.0
 six==1.17.0
-smac==2.3.0
+#smac==2.3.0
 sounddevice==0.5.1
 soundfile==0.12.1
 soxr==0.5.0.post1

@@ -525,12 +525,13 @@ def load_trained_model(device, checkpoint_path, pretrained_model):
 def predict_emotion(model, device, processor, wav_data):
     model.eval()
     inputs = processor(wav_data, sampling_rate=16000, return_tensors="pt", padding = 'max_length', \
-                                truncation = True, max_length = 10*16000, do_normalize = True,\
+                                truncation = True, max_length = 6*16000, do_normalize = True,\
                                 return_attention_mask = False)
 
     input_values = inputs['input_values'].to(device)
     mel_spectrogram = EmotionDataset.get_mel_spectrogram(input_values).to(device)
     mel_spectrogram = mel_spectrogram.permute(1,0,2,3)
+
 
     with torch.no_grad():
         _, outputs = model(input_values=input_values, mel_spectrogram=mel_spectrogram)
@@ -589,3 +590,5 @@ if __name__ == "__main__":
     main()
 
 #remember to do a scatterplot for valence and arousal like paper https://iopscience.iop.org/article/10.1088/1742-6596/1896/1/012004/pdf
+
+

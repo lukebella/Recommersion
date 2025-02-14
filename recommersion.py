@@ -41,9 +41,15 @@ class Functions:
         self.custom_model, self.custom_processor = load_trained_model(self.device, \
                                                                       self.custom_model_name, self.custom_pretrained_model)
         
-        with open("./data/Songs_path", "rb") as f:  #SpotiGEM_songs
-            self.data = pickle.load(f)
+        with open("./data/Songs_path", "rb") as f: 
+            self.data_normal = pickle.load(f)
         print("Songs loaded!")
+
+        with open("./data/SpotiGEM_songs", "rb") as f:  
+            self.data_spoti = pickle.load(f)
+        print("Songs loaded!")
+
+        self.data = self.data_normal
         self.callback()
 
 
@@ -80,7 +86,8 @@ class Functions:
        
     
     # Generating playlist via the selected distance
-    def generate_playlist(self, dimensional, distance:str,  cut:int = 5):
+    def generate_playlist(self, dimensional, distance:str,  cut:int = 5, dataset:str="normal"):
+        self.data = self.data_spoti if dataset=="spotify" else self.data_normal
         dist_dict = {
             "Euclidean": lambda x, y: linalg.norm(x-y),
             "Cosine": lambda x, y: cosine(x, y)
@@ -120,6 +127,7 @@ class Recommersion(ctk.CTk):
         self.paused = True
         
         self.current_speech = None
+        self.dataset = "normal"
 
         # Class for display text while hovering any widget 
         self.hover_text = HoverText("hover_interface/widget_hover.txt")
@@ -235,7 +243,7 @@ class Recommersion(ctk.CTk):
     def create_playlist_frame(self):
         self.playlist_and_control_frame = ctk.CTkFrame(self, width = int(self.window_width*0.6), bg_color ="white", fg_color="gray5", corner_radius=0)
         self.playlist_and_control_frame.grid(row=0, column=1, rowspan=4, sticky="nsew")
-        self.playlist_and_control_frame.grid_rowconfigure(6, weight=1)
+        self.playlist_and_control_frame.grid_rowconfigure(7, weight=1)
         self.playlist_and_control_frame.grid_columnconfigure(1, weight=1)
 
         # Playlist box
@@ -261,12 +269,16 @@ class Recommersion(ctk.CTk):
         self.playlist_box.bind('<<TreeviewSelect>>', self.play_in_the_box)
         self.playlist_box.bind("<Enter>", lambda event: self.hover_show(event, "playlist_box"))
 
+        self.spotify_checkbox = ctk.CTkCheckBox(self.playlist_and_control_frame, text="SpotiGeM Dataset", command = self.assign_song_data)
+        self.spotify_checkbox.grid(row=2, column=1, padx=(self.padding_width*15, self.padding_width*10), pady=(self.padding_height, self.padding_height), sticky="w")
+
+
         # Dimensional Sliders
         self.adj_label = ctk.CTkLabel(self.playlist_and_control_frame, text="Emotional Adjustments", \
                                       font=ctk.CTkFont(size=20, weight="bold"), text_color="white")
-        self.adj_label.grid(row=2, column=1, padx=self.padding_width*2, pady=(self.padding_height*2, 3), sticky = "w")
+        self.adj_label.grid(row=3, column=1, padx=self.padding_width*2, pady=(self.padding_height*2, 3), sticky = "w")
         self.adjustment_frame = ctk.CTkFrame(self.playlist_and_control_frame, fg_color="transparent")
-        self.adjustment_frame.grid(row=3, column=1, padx=(self.padding_width*2, self.padding_width*2), pady=(self.padding_height*2, 0), sticky="nsew")
+        self.adjustment_frame.grid(row=4, column=1, padx=(self.padding_width*2, self.padding_width*2), pady=(self.padding_height*2, 0), sticky="nsew")
         self.adjustment_frame.grid_columnconfigure(0, weight=0)  # Label column
         self.adjustment_frame.grid_columnconfigure(1, weight=1)  # Slider column
         self.adjustment_frame.grid_columnconfigure(2, weight=0)  # Emoji column
@@ -305,10 +317,10 @@ class Recommersion(ctk.CTk):
         
         # Song and Control frames
         self.song_frame = ctk.CTkFrame(self.playlist_and_control_frame, width = self.window_width*0.55, height=self.window_height*0.2, fg_color="SlateBlue3")
-        self.song_frame.grid(row=5, column=1, columnspan=4, padx=(self.padding_width*2,self.padding_width*2), pady=(self.padding_height*4,0), sticky="nsew")
+        self.song_frame.grid(row=6, column=1, columnspan=4, padx=(self.padding_width*2,self.padding_width*2), pady=(self.padding_height*4,0), sticky="nsew")
         self.song_frame.bind("<Enter>", lambda event: self.hover_show(event, "song_frame"))
         self.controls_frame = ctk.CTkFrame(self.playlist_and_control_frame, width = self.window_width*0.55, height=self.window_height*0.18, fg_color="SlateBlue4")
-        self.controls_frame.grid(row=6, column=1, columnspan=4, padx=(self.padding_width*2,self.padding_width*2), pady=(0,self.padding_height*4), sticky="nsew")
+        self.controls_frame.grid(row=7, column=1, columnspan=4, padx=(self.padding_width*2,self.padding_width*2), pady=(0,self.padding_height*4), sticky="nsew")
         self.controls_frame.bind("<Enter>", lambda event: self.hover_show(event, "controls_frame"))
         self.controls_frame.grid_columnconfigure(6, weight=1)
         self.controls_frame.grid_rowconfigure(1, weight=1)
@@ -395,7 +407,7 @@ class Recommersion(ctk.CTk):
                             f"Loading playlist with valence {dimensional[0]} and arousal {dimensional[1]}:\n \
                             this might take a while...")
         playlist = self.functions.generate_playlist(dimensional = dimensional, \
-                                                    distance=self.distance.get(), cut = cut).reset_index()
+                                                    distance=self.distance.get(), cut = cut, dataset=self.dataset).reset_index()
         self.text_var.set("Playlist generated. Enjoy!")
         print(playlist)
         self.after(0, lambda: self.update_playlist(playlist))
@@ -421,7 +433,7 @@ class Recommersion(ctk.CTk):
     def generate_from_speech(self):
         if self.current_speech is not None and self.data_loaded:
             dimensional = self.functions.predict_valence_arousal(file = self.current_speech, \
-                                                                model = self.model.get())
+                                                                 model = self.model.get())
             print(dimensional)
             print("before setting")
             new_val = dimensional[0] * self.valence_slider.cget("to")
@@ -477,6 +489,11 @@ class Recommersion(ctk.CTk):
 
 
     # Song control's methods
+            
+    def assign_song_data(self):
+        print("Change dataset")
+        self.dataset = "spotify" if self.spotify_checkbox.get() == 1 else "normal"
+
 
     def _play(self, song):
         self.mixer.music.load(song['mp3_path'])
