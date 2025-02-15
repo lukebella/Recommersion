@@ -69,7 +69,7 @@ pyasn1==0.6.1
 PyAudio==0.2.14
 pycparser==2.22
 pygame==2.6.1
-Pygments==2.14.0
+Pygments>=2.15.0
 pyobjc==10.3.2
 pyobjc-core==10.3.2
 pyobjc-framework-Accessibility==10.3.2
@@ -241,7 +241,7 @@ rfc3986-validator==0.1.1
 rich==13.7.0
 rsa==4.9
 safetensors==0.5.2
-scikit-learn==1.4.2
+scikit-learn>=1.5.0
 scipy==1.11.2
 Send2Trash==1.8.0
 setuptools==75.8.0
@@ -266,7 +266,7 @@ torchmetrics==1.5.1
 tornado==6.4.2
 tqdm==4.67.1
 traitlets==5.14.3
-transformers==4.47.0
+transformers>=4.48.0
 typing_extensions==4.12.2
 tzdata==2024.2
 urllib3==2.3.0
