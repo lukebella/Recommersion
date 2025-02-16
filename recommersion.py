@@ -221,7 +221,7 @@ class Recommersion(ctk.CTk):
 
         # Instruction Textbox
         self.instr_label = ctk.CTkLabel(self.input_frame, text = "Instructions",font=ctk.CTkFont(size=20, weight="bold"))
-        self.instr_label.grid(row=9, column=0, padx=(self.padding_width*2, self.padding_width*2), pady=(self.padding_height*16, self.padding_height), sticky="w")
+        self.instr_label.grid(row=9, column=0, padx=(self.padding_width*2, self.padding_width*2), pady=(self.padding_height*20, self.padding_height), sticky="w")
         self.textbox = ctk.CTkTextbox(self.input_frame, wrap = "word", height=int(self.window_height*0.10), width=int(self.window_width*0.15), font=ctk.CTkFont("italic", size=12))
         self.textbox.insert(1.0, self.hover_text.get_widget("general"))
         self.textbox.grid(row=10, column=0, padx=(self.padding_width*2, self.padding_width*2), pady=(self.padding_height*2, self.padding_height+3), sticky="nsew")
@@ -424,8 +424,11 @@ class Recommersion(ctk.CTk):
         
 
     def reproduce_speech(self):
-        if not(self.current_speech is None or (self.mixer.music.get_busy())):
+        if not(self.current_speech is None):
+            self.pause_song()
             sd.play(self.current_speech, 16000)
+            sd.wait()
+            self.unpause()
         else: 
             messagebox.showinfo("Speech", "No recorded speech yet!")
 
@@ -467,6 +470,7 @@ class Recommersion(ctk.CTk):
         self.playlist_initialized = True  
         self.play_song()
     
+
     @staticmethod
     def append_playlist(self, track):
         self.playlist_box.insert("", "end", values=(track['artist'], track['title']))
@@ -477,6 +481,7 @@ class Recommersion(ctk.CTk):
         self.playlist_initialized = True  
         self.play_song()
     
+
     def adjust_recommendation(self):
         if self.data_loaded:
             valence = self.valence_slider.get() / self.valence_slider.cget("to")
@@ -518,8 +523,11 @@ class Recommersion(ctk.CTk):
             self._play(self.current_song)
             
         else:
-            self.mixer.music.unpause()
-            self.paused = False
+            self.unpause()
+    
+    def unpause(self):
+        self.mixer.music.unpause()
+        self.paused = False
 
 
     def pause_song(self):

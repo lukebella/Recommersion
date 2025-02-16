@@ -188,7 +188,7 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
     
         # BLSTM
         #config.hidden_size = 768
-        self.rnn = nn.LSTM(input_size= 7968, hidden_size=1024, num_layers=2, \
+        self.rnn = nn.LSTM(input_size= 7968, hidden_size=config.hidden_size, num_layers=2, \
                            batch_first=True, bidirectional=True, dropout=0.5)
         self.act = nn.Tanh()
         self.dropout = nn.Dropout(0.5)
