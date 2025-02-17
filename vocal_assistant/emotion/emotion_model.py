@@ -90,7 +90,7 @@ def process_func(
     # convert to numpy
     y = y.detach().cpu().numpy()
 
-    return y
+    return y[:,[2,0,1]]
 
 
 """print(process_func(signal, sampling_rate))
