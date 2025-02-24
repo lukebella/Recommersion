@@ -17,6 +17,8 @@ from PIL import Image
 import validators
 import tempfile 
 import sounddevice as sd
+import librosa
+import soundfile as sf
 
 
 # Appearence and default color
@@ -126,7 +128,9 @@ class Recommersion(ctk.CTk):
         self.current_song = pd.DataFrame([])
         self.paused = True
         
-        self.current_speech = None
+        y, sr = librosa.load("prova.wav", sr=44100)
+        self.current_speech = librosa.resample(y, orig_sr=sr, target_sr=16000)  
+
         self.dataset = "normal"
 
         # Class for display text while hovering any widget 
