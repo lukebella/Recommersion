@@ -12,7 +12,7 @@ device = "cpu"  #return_device()
 model_name = "facebook/wav2vec2-base"
 #processor = Wav2Vec2Processor.from_pretrained(model_name)
 config = Wav2Vec2Config.from_pretrained(model_name)
-model, processor = load_trained_model(device,"custom_2.pth", model_name)
+model, processor = load_trained_model(device,"custom_3.pth", model_name)
 
 muse = pd.read_pickle("data/MuSe_sample").sample(frac=1, random_state=42)
 iemocap = pd.read_pickle("data/IEMOCAP_useful").sample(frac=1, random_state=42)
@@ -86,3 +86,15 @@ print("R2 Arousal:" ,R2(arousal_tensor, logits[:,1]).item())
 # L1 Arousal: 0.18179208040237427
 # L2 Arousal: 0.04841628670692444
 # R2 Arousal: -0.743027925491333
+
+
+# **********Custom (no mel)**********
+# CCC Valence: 0.7154844999313354
+# L1 Valence: 0.18366390466690063
+# L2 Valence: 0.05433766171336174
+# R2 Valence: -0.7336512804031372
+
+# CCC Arousal: 0.5005879402160645
+# L1 Arousal: 0.13958996534347534
+# L2 Arousal: 0.03211669996380806
+# R2 Arousal: -0.1562288999557495
