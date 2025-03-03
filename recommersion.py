@@ -128,7 +128,7 @@ class Recommersion(ctk.CTk):
         self.current_song = pd.DataFrame([])
         self.paused = True
         
-        y, sr = librosa.load("prova.wav", sr=44100)
+        y, sr = librosa.load("test_gabri.wav", sr=44100)
         self.current_speech = librosa.resample(y, orig_sr=sr, target_sr=16000)  
 
         self.dataset = "normal"
