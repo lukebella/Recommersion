@@ -75,19 +75,6 @@ print("R2 Arousal:" ,R2(arousal_tensor, logits[:,1]).item())
 # L2 Arousal: 0.023512154817581177
 # R2 Arousal: 0.15354233980178833
 
-
-# **********Custom**********
-# CCC Valence: 0.7543468475341797
-# L1 Valence: 0.14536753296852112
-# L2 Valence: 0.0337047353386879
-# R2 Valence: -0.07535457611083984
-
-# CCC Arousal: 0.6669815182685852
-# L1 Arousal: 0.18179208040237427
-# L2 Arousal: 0.04841628670692444
-# R2 Arousal: -0.743027925491333
-
-
 # **********Custom (no mel)**********
 # CCC Valence: 0.7154844999313354
 # L1 Valence: 0.18366390466690063
@@ -98,3 +85,14 @@ print("R2 Arousal:" ,R2(arousal_tensor, logits[:,1]).item())
 # L1 Arousal: 0.13958996534347534
 # L2 Arousal: 0.03211669996380806
 # R2 Arousal: -0.1562288999557495
+
+# **********Custom (mel)**********
+# CCC Valence: 0.7543468475341797
+# L1 Valence: 0.14536753296852112
+# L2 Valence: 0.0337047353386879
+# R2 Valence: -0.07535457611083984
+
+# CCC Arousal: 0.6669815182685852
+# L1 Arousal: 0.18179208040237427
+# L2 Arousal: 0.04841628670692444
+# R2 Arousal: -0.743027925491333

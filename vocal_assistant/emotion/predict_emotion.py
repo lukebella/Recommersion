@@ -12,7 +12,6 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')
 from torchmetrics.regression import ConcordanceCorrCoef
-#from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 import random
 import librosa
@@ -177,7 +176,7 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=(2, 2)),
 
-            nn.Conv2d(8, 16, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
+            nn.Conv2d(8, 8, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
             nn.BatchNorm2d(16),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=(2, 2)),
@@ -188,7 +187,7 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
     
         # BLSTM
         #config.hidden_size = 768
-        self.rnn = nn.LSTM(input_size= 7968, hidden_size=config.hidden_size, num_layers=2, \
+        self.rnn = nn.LSTM(input_size= 4368, hidden_size=config.hidden_size, num_layers=2, \
                            batch_first=True, bidirectional=True, dropout=0.5)
         self.act = nn.Tanh()
         self.dropout = nn.Dropout(0.5)
@@ -214,26 +213,11 @@ class EmotionModel(Wav2Vec2PreTrainedModel):
         temp,_ = self.rnn(combined_features)
         temp = self.dropout(temp)
         temp = self.act(temp)
-        #
+        
         logits = self.regressor(temp)
         
         return hidden_states, logits
     
-
-#writer = SummaryWriter("runs/emotion_model")
-
-def log_embedding_norms(model, epoch):
-    for name, param in model.named_parameters():
-        if "wav2vec2.encoder" in name and param.requires_grad:
-            embedding_norm = param.norm(2).item()
-            #writer.add_scalar(f"Embedding Norm/{name}", embedding_norm, epoch)
-
-
-def log_gradient_norms(model, epoch):
-    for name, param in model.named_parameters():
-        if param.grad is not None:
-            grad_norm = param.grad.norm(2).item()
-            #.add_scalar(f"Gradient Norm/{name}", grad_norm, epoch)
 
 
 # Saving best epoch model 
@@ -248,7 +232,7 @@ def save_checkpoint(model, optimizer, epoch, filename):
     print(f"Checkpoint saved at epoch {epoch + 1}")
 
 
-# Dynamically set device
+# Dynamically set device (CUDA GPU or CPU)
 def return_device():
     return torch.device("cuda" if torch.cuda.is_available() else "cpu") 
 
@@ -297,46 +281,14 @@ def compute_loss(model, device, batch, alpha, beta):
     
     _,logits = model(input_values, mel_spectrogram)
 
-    # print("Predictions:", logits[:8].detach().cpu().numpy())
-    # print("True labels:", labels[:8].detach().cpu().numpy())
-
     loss_val = ccc_loss(labels[:, 0], logits[:, 0])
     loss_ar = ccc_loss(labels[:, 1], logits[:, 1])
 
-    """l1_val = L1(labels[:, 0], logits[:, 0])
-    l2_val = L2(labels[:, 0], logits[:, 0])
-    r2_val = R2(labels[:, 0], logits[:, 0])
-    
-    l1_ar = L1(labels[:, 1], logits[:, 1])
-    l2_ar = L2(labels[:, 1], logits[:, 1])
-    r2_ar = R2(labels[:, 1], logits[:, 1])"""
-
-    """l1 = alpha * l1_val + beta * l1_ar
-    l2 = alpha * l2_val + beta * l2_ar
-    r2 = alpha * r2_val + beta * r2_ar"""
     # Weighted total loss
     loss = alpha * loss_val + beta * loss_ar
     print(f"Loss (valence): {loss_val.item()}, Loss (arousal): {loss_ar.item()}, Total: {loss.item()}")
     return loss, loss_val, loss_ar, labels, logits
 
-
-
-def get_gradients(model):
-    gradients = {}
-    for name, param in model.named_parameters():
-        if param.grad is not None:
-            gradients[name] = param.grad.clone().detach().cpu().numpy()
-    return gradients
-
-
-def plot_gradients(gradients, layer_name):
-    if layer_name in gradients:
-        grad = gradients[layer_name]
-        plt.hist(grad.flatten(), bins=100)
-        plt.title(f'Gradient Distribution - {layer_name}')
-        plt.xlabel('Gradient Value')
-        plt.ylabel('Frequency')
-        plt.savefig("gradients.png")
 
 
 # Training function
@@ -373,12 +325,7 @@ def train(model, device, train_dataloader, test_dataloader, \
             # Backpropagation
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            log_gradient_norms(model, epoch)
-            """gradients = get_gradients(model)
-
-            for name, grad in gradients.items():
-                grad_norm = np.linalg.norm(grad)
-                print(f"Gradient Norm for {name}: {grad_norm}")"""
+            
 
             optimizer.step()
             loss = loss.item()
@@ -388,12 +335,10 @@ def train(model, device, train_dataloader, test_dataloader, \
         train_losses.append(avg_epoch_loss)
 
         print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {avg_epoch_loss}")
-        #writer.add_scalar("Loss/Train", avg_epoch_loss, epoch)
-        log_embedding_norms(model, epoch)
 
         # Validation Loop
         val_loss, loss_val, loss_ar, l1_val, l2_val, r2_val, l1_ar, l2_ar, r2_ar = validate(model, device, test_dataloader, alpha, beta)
-        #writer.add_scalar("Loss/Validation", val_loss, epoch)
+
         val_losses.append(val_loss)
         valence_losses.append(loss_val)
         arousal_losses.append(loss_ar)
@@ -423,8 +368,6 @@ def train(model, device, train_dataloader, test_dataloader, \
         plot_metrics(valence_losses, arousal_losses, l1_losses_val, l2_losses_val, r2_losses_val, \
                      l1_losses_ar, l2_losses_ar, r2_losses_ar)
         scheduler.step(val_loss)
-
-    #writer.close()
 
 
 # Validation Loop
@@ -583,12 +526,11 @@ def main():
     
     model = EmotionModel(config).to(device)
     summary(model)
-    train(model, device, train_dataloader, test_dataloader, epochs = 50)#, alpha = best_alpha, beta = best_beta)
+    train(model, device, train_dataloader, test_dataloader, epochs = 50)
 
 
 if __name__ == "__main__":
     main()
 
-#remember to do a scatterplot for valence and arousal like paper https://iopscience.iop.org/article/10.1088/1742-6596/1896/1/012004/pdf
 
 

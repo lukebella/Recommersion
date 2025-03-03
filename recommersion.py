@@ -23,7 +23,6 @@ import soundfile as sf
 
 # Appearence and default color
 ctk.set_appearance_mode("System")  
-#ctk.set_default_color_theme("dark-blue")  
 
 
 # Functions used by the GUI
@@ -365,8 +364,6 @@ class Recommersion(ctk.CTk):
         self.data_loaded = True
         #self.after(10000, self.remove_loading_label())
     
-    # def remove_loading_label(self):
-    #     self.loading_label.pack_forget()
 
     def hover_show(self, event, s):
         text = self.hover_text.get_widget(s)
